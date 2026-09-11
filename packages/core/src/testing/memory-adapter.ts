@@ -1,4 +1,17 @@
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters } from '../storage';
+import type {
+    StorageAdapter,
+    NodeRow,
+    NodeInsertRow,
+    ApiKeyRow,
+    ProjectRow,
+    ContextFilters,
+    SearchFilters,
+    SearchHit,
+    ActivityQuery,
+    ActivityRow,
+} from '../storage';
+import { searchableText } from '../ops/search';
+import { aggregateActivity } from '../ops/analytics';
 
 // -- In-memory storage adapter ------------------------------------------------
 
@@ -40,11 +53,6 @@ export class MemoryStorage implements StorageAdapter {
         return n ? { public_id: n.public_id } : null;
     }
 
-    async findRootContextByPublicId(publicId: string) {
-        const n = this.nodes.find((n) => n.public_id === publicId && n.type === 'context' && n.context_id === null);
-        return n ? { public_id: n.public_id } : null;
-    }
-
     async listRootContexts(projectId: number, limit: number, _filters?: ContextFilters) {
         return this.nodes
             .filter((n) => n.project_id === projectId && n.type === 'context' && n.context_id === null)
@@ -64,7 +72,7 @@ export class MemoryStorage implements StorageAdapter {
                 type: row.type,
                 content: row.content ?? {},
                 metadata: row.metadata ?? {},
-                created_at: new Date().toISOString(),
+                created_at: row.created_at ?? new Date().toISOString(),
                 parent_id: row.parent_id ?? null,
                 prev_id: row.prev_id ?? null,
                 context_id: row.context_id ?? null,
@@ -104,6 +112,49 @@ export class MemoryStorage implements StorageAdapter {
                 n.parent_id = null;
             }
         }
+    }
+
+    async searchMessages(projectId: number, query: string, filters: SearchFilters, limit: number): Promise<SearchHit[]> {
+        const needle = query.toLowerCase();
+        const hits: SearchHit[] = [];
+
+        for (const n of this.nodes) {
+            if (n.project_id !== projectId) continue;
+            if (n.type === 'context') continue;
+
+            const text = searchableText(n.content);
+            if (!text.toLowerCase().includes(needle)) continue;
+
+            const meta = (n.metadata ?? {}) as Record<string, unknown>;
+            if (filters.source && meta.source !== filters.source) continue;
+            if (filters.user_id && meta.user_id !== filters.user_id) continue;
+            if (filters.host && meta.host !== filters.host) continue;
+            if (filters.session_id && meta.session_id !== filters.session_id) continue;
+            if (filters.after && String(n.created_at) <= filters.after) continue;
+            if (filters.before && String(n.created_at) >= filters.before) continue;
+
+            const branch = this.nodes.find((b) => b.public_id === n.context_id && b.type === 'context');
+            hits.push({
+                context_id: branch?.context_id ?? n.context_id ?? '',
+                branch_id: n.context_id ?? '',
+                message_id: n.public_id,
+                content: text,
+                metadata: meta,
+                created_at: n.created_at,
+                rank: -text.toLowerCase().indexOf(needle),
+            });
+        }
+
+        // ascending rank (bm25 convention), newest first on ties
+        hits.sort((a, b) => a.rank - b.rank || String(b.created_at).localeCompare(String(a.created_at)));
+        return hits.slice(0, limit);
+    }
+
+    async projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        return aggregateActivity(
+            this.nodes.filter((n) => n.project_id === projectId),
+            query,
+        );
     }
 
     async findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null> {

@@ -39,6 +39,60 @@ export function createMcpServer(reader: ContextReader) {
     },
   );
 
+  // full-text search across every captured context
+  mcp.registerTool(
+    "search_contexts",
+    {
+      title: "Search Contexts",
+      description:
+        "Full-text search across all captured agent context. Finds a plan, a decision, an error, or a snippet by what it says — no context ID required. Free and unmetered.",
+      inputSchema: {
+        query: z.string().describe("What to search for (e.g. 'refactor the auth middleware')"),
+        limit: z.number().optional().describe("Max results (default 20, max 100)"),
+        source: z.string().optional().describe("Restrict to an agent: claude, codex, cursor, gemini, openclaw"),
+        user_id: z.string().optional().describe("Restrict to a user identifier"),
+        host: z.string().optional().describe("Restrict to a machine hostname"),
+        project_path: z.string().optional().describe("Restrict to a project directory"),
+        session_id: z.string().optional().describe("Restrict to a session identifier"),
+        after: z.string().optional().describe("ISO8601 — only results after this time"),
+        before: z.string().optional().describe("ISO8601 — only results before this time"),
+      },
+    },
+    async (args) => {
+      const res = await reader.search({
+        query: args.query,
+        limit: args.limit,
+        source: args.source,
+        user_id: args.user_id,
+        host: args.host,
+        project_path: args.project_path,
+        session_id: args.session_id,
+        after: args.after,
+        before: args.before,
+      });
+
+      if (res.data.length === 0) {
+        return { content: [{ type: "text" as const, text: `No matches for "${args.query}".` }] };
+      }
+
+      const summary = {
+        query: res.query,
+        count: res.data.length,
+        results: res.data.map((hit) => ({
+          context_id: hit.context_id,
+          message_id: hit.message_id,
+          source: hit.metadata?.source,
+          user_id: hit.metadata?.user_id,
+          session_id: hit.metadata?.session_id,
+          created_at: hit.created_at,
+          match: hit.content,
+        })),
+      };
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }] };
+    },
+  );
+
   // get messages from a specific context
   mcp.registerTool(
     "get_context_messages",
@@ -53,6 +107,48 @@ export function createMcpServer(reader: ContextReader) {
       const res = await reader.getMessages(args.context_id);
       if (!res) return { content: [{ type: "text" as const, text: "Context not found." }] };
       return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+    },
+  );
+
+  // free usage analytics — how much context have I captured, and from where?
+  mcp.registerTool(
+    "get_activity_stats",
+    {
+      title: "Get Activity Stats",
+      description:
+        "Usage analytics for your captured context: totals, per-source breakdown and a time series bucketed by day, week or month. Computed from your own database — free, unmetered, and never truncated by a retention window.",
+      inputSchema: {
+        bucket: z.enum(["day", "week", "month"]).optional().describe("Time granularity (default day)"),
+        days: z.number().optional().describe("Width of the default window (default 30 for day, 12 for week/month)"),
+        from: z.string().optional().describe("ISO8601 lower bound"),
+        to: z.string().optional().describe("ISO8601 upper bound (exclusive)"),
+        source: z.string().optional().describe("Restrict to one agent source (claude, codex, …)"),
+      },
+    },
+    async (args) => {
+      const res = await reader.activity({
+        bucket: args.bucket,
+        days: args.days,
+        from: args.from,
+        to: args.to,
+        source: args.source,
+      });
+
+      const summary = {
+        bucket: res.bucket,
+        window: { from: res.from, to: res.to },
+        totals: res.totals,
+        by_source: res.by_source,
+        series: res.series.map((p) => ({
+          bucket_start: p.bucket_start,
+          messages: p.messages,
+          contexts: p.contexts,
+          sessions: p.root_contexts,
+          sources: p.sources,
+        })),
+      };
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }] };
     },
   );
 

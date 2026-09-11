@@ -467,3 +467,88 @@ describe('createContext', () => {
         assert.deepEqual(roots.map((r) => r.public_id), [seed.rootId]);
     });
 });
+
+// -- tenant isolation (SEC-001) ------------------------------------------------
+
+// Regression tests for the cross-tenant fork read: a fork source must be
+// resolved WITHIN the caller's project. Knowing another tenant's context id
+// must never be enough to read or copy it.
+describe('createContext — tenant isolation (SEC-001)', () => {
+    it('refuses to fork another project\'s context by id alone', async () => {
+        const storage = new MemoryStorage();
+        const tenantA = (await storage.insertProject('a'))!;
+        const tenantB = (await storage.insertProject('b'))!;
+
+        const secret = await seedContext(storage, tenantA.id, {
+            messages: [{ role: 'user', content: 'TENANT-A-SECRET' }],
+        });
+
+        const result = await createContext(storage, tenantB.id, { from: secret.rootId });
+
+        assert.equal(result.ok, false);
+        if (!result.ok) {
+            assert.equal(result.code, 'not_found');
+            assert.equal(result.message, 'Source context not found');
+        }
+
+        // and no node from tenant A leaked into tenant B
+        const leaked = storage
+            .getAllNodes()
+            .filter((n) => n.project_id === tenantB.id);
+        assert.equal(leaked.length, 0);
+    });
+
+    it('refuses the version fork path across projects', async () => {
+        const storage = new MemoryStorage();
+        const tenantA = (await storage.insertProject('a'))!;
+        const tenantB = (await storage.insertProject('b'))!;
+
+        const seed = await seedContext(storage, tenantA.id, { messages: [{ text: 'm0' }] });
+        await addVersion(storage, tenantA.id, seed.rootId, [{ text: 'm1' }]);
+
+        const result = await createContext(storage, tenantB.id, { from: seed.rootId, version: 1 });
+        assert.equal(result.ok, false);
+        if (!result.ok) assert.equal(result.code, 'not_found');
+    });
+
+    it('refuses the `before` timestamp fork path across projects', async () => {
+        const storage = new MemoryStorage();
+        const tenantA = (await storage.insertProject('a'))!;
+        const tenantB = (await storage.insertProject('b'))!;
+
+        const seed = await seedContext(storage, tenantA.id, { messages: [{ text: 'm0' }] });
+
+        const result = await createContext(storage, tenantB.id, {
+            from: seed.rootId,
+            before: new Date(Date.now() + 60_000).toISOString(),
+        });
+        assert.equal(result.ok, false);
+        if (!result.ok) assert.equal(result.code, 'not_found');
+    });
+
+    it('refuses the `at` fork path across projects', async () => {
+        const storage = new MemoryStorage();
+        const tenantA = (await storage.insertProject('a'))!;
+        const tenantB = (await storage.insertProject('b'))!;
+
+        const seed = await seedContext(storage, tenantA.id, { messages: [{ text: 'm0' }] });
+
+        const result = await createContext(storage, tenantB.id, { from: seed.rootId, at: 0 });
+        assert.equal(result.ok, false);
+        if (!result.ok) assert.equal(result.code, 'not_found');
+    });
+
+    it('still forks happily within the owning project', async () => {
+        const storage = new MemoryStorage();
+        const project = (await storage.insertProject('a'))!;
+
+        const seed = await seedContext(storage, project.id, { messages: [{ text: 'm0' }] });
+
+        const result = await createContext(storage, project.id, { from: seed.rootId });
+        assert.equal(result.ok, true);
+        if (!result.ok) return;
+
+        // a fork is a NEW context, not a copy of the id
+        assert.notEqual(result.data.id, seed.rootId);
+    });
+});

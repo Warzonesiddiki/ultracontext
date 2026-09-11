@@ -79,7 +79,11 @@ export async function createContext(
     // resolve the source nodes to copy when forking
     let sourceNodes: NodeRow[] = [];
     if (from) {
-        const sourceCtx = await storage.findRootContextByPublicId(from);
+        // SEC-001: the source lookup MUST be project-scoped. Resolving a fork
+        // source by public id alone let a caller with only an id (leaked in a
+        // log, a shared link, a transcript) read and copy another tenant's
+        // context. findRootContext() applies `project_id` in the same query.
+        const sourceCtx = await storage.findRootContext(projectId, from);
         if (!sourceCtx) return err('not_found', 'Source context not found');
 
         // pick the source head — by version index, by timestamp, or latest

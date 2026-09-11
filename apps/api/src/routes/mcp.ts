@@ -1,6 +1,6 @@
 import { handleMcpRequest } from 'ultracontext-mcp-server/handler';
 import type { ContextReader } from 'ultracontext-mcp-server/types';
-import { listContexts, getContextMessages } from '@ultracontext/core';
+import { listContexts, getContextMessages, searchMessages, getProjectActivity } from '@ultracontext/core';
 import type { HttpApp, HttpContext } from '../types/http';
 
 // -- storage-backed reader (no HTTP loopback) ---------------------------------
@@ -10,8 +10,18 @@ function storageReader(c: HttpContext): ContextReader {
     const storage = c.get('storage');
 
     return {
+        search: (input) => searchMessages(storage, projectId, input).then((result) => {
+            if (!result.ok) return { query: input.query, limit: 0, data: [] };
+            return result.data;
+        }),
         listContexts: (input) => listContexts(storage, projectId, input),
         getMessages: (id) => getContextMessages(storage, projectId, id),
+        // free analytics, straight off your own database — no telemetry pipeline
+        activity: (input) =>
+            getProjectActivity(storage, projectId, input).then((result) => {
+                if (!result.ok) throw new Error(result.message);
+                return result.data;
+            }),
     };
 }
 

@@ -5,10 +5,12 @@ import {
     deleteManyContexts,
     deleteMessages,
     getContext,
+    getProjectActivity,
     isPlainObject,
     listContexts,
     resultStatus,
     updateMessages,
+    searchMessages,
     type ContextFilters,
     type ErrorCode,
 } from '@ultracontext/core';
@@ -64,6 +66,71 @@ export function registerContextRoutes(app: HttpApp) {
 
         const data = await listContexts(storage, projectId, filters);
         return c.json(data);
+    });
+
+    // -- full-text search (must be registered before :id routes) ----------------
+
+    // Search is free and unmetered — UltraContext has no query quota and no paywall.
+    app.get('/contexts/search', async (c) => {
+        const { projectId } = c.get('auth');
+        const storage = c.get('storage');
+        const query = c.req.query('q') ?? '';
+
+        const limitRaw = c.req.query('limit');
+        const limit = limitRaw === undefined ? undefined : parseInt(limitRaw);
+
+        const result = await searchMessages(storage, projectId, {
+            query,
+            ...(limit !== undefined && { limit }),
+            source: c.req.query('source') ?? undefined,
+            user_id: c.req.query('user_id') ?? undefined,
+            host: c.req.query('host') ?? undefined,
+            project_path: c.req.query('project_path') ?? undefined,
+            session_id: c.req.query('session_id') ?? undefined,
+            after: c.req.query('after') ?? undefined,
+            before: c.req.query('before') ?? undefined,
+        });
+
+        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        return c.json(result.data);
+    });
+
+    // -- activity / analytics (must be registered before :id routes) ------------
+
+    // Free analytics, computed on demand from your own database. The commercial
+    // tier sells analytics and gates "unlimited analytics" behind Pro — there is
+    // nothing to unlock here and no history window that silently truncates.
+    //   GET /contexts/stats?bucket=day|week|month&days=30&from=…&to=…&source=…
+    app.get('/contexts/stats', async (c) => {
+        const { projectId } = c.get('auth');
+        const storage = c.get('storage');
+
+        const bucket = c.req.query('bucket') ?? 'day';
+        if (bucket !== 'day' && bucket !== 'week' && bucket !== 'month') {
+            return c.json({ error: `Invalid bucket '${bucket}'. Use day, week or month.` }, 400);
+        }
+
+        const from = c.req.query('from');
+        const to = c.req.query('to');
+        if (from !== undefined && isNaN(Date.parse(from))) return c.json({ error: 'Invalid from timestamp' }, 400);
+        if (to !== undefined && isNaN(Date.parse(to))) return c.json({ error: 'Invalid to timestamp' }, 400);
+
+        const daysRaw = c.req.query('days');
+        const days = daysRaw === undefined ? undefined : parseInt(daysRaw);
+        if (daysRaw !== undefined && (isNaN(days as number) || (days as number) < 1)) {
+            return c.json({ error: 'Invalid days value' }, 400);
+        }
+
+        const result = await getProjectActivity(storage, projectId, {
+            bucket,
+            ...(from !== undefined && { from }),
+            ...(to !== undefined && { to }),
+            ...(days !== undefined && { days }),
+            source: c.req.query('source') ?? undefined,
+        });
+
+        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        return c.json(result.data);
     });
 
     // -- delete-many contexts (must be registered before :id routes) -----------

@@ -47,7 +47,7 @@
 
 What Claude Code knows, Codex doesn't. What your teammate is shipping right now? Your agent has no idea.
 
-UltraContext captures every agent's context in realtime and makes it available to all of them. It's like having a personal context engineer everywhere. Continue a session in a different agent, or just ask what's happeming.
+UltraContext captures every agent's context in realtime and makes it available to all of them. It's like having a personal context engineer everywhere. Continue a session in a different agent, or just ask what's happening.
 
 For example:
 
@@ -59,10 +59,13 @@ Open source. Framework-agnostic. Customizable via the git-like Context API.
 
 ## Features
 
-| CLI | Auto-ingest Claude Code, Codex, and OpenClaw sessions with a terminal dashboard. |
+| CLI | Auto-ingest Claude Code, Codex, OpenClaw, Cursor, Gemini and gstack sessions with a terminal dashboard. |
 | --- | --- |
 | MCP Server | Share context everywhere. Built into the API, or run standalone via stdio. |
 | Context API | Git-like context engineering API. Store, version, and retrieve agent context with zero complexity. |
+| Search | Full-text search across every captured session. Find a plan by what it says, not by its ID. |
+| Analytics | Usage totals, per-agent breakdown and a day/week/month series — computed from your own database. |
+| Self-hosted | Run the whole thing on your own machine against a local SQLite file. No account, no cloud, no cost. |
 
 ---
 
@@ -76,10 +79,41 @@ Open source. Framework-agnostic. Customizable via the git-like Context API.
 
 ## Install
 
-Requires Node >= 22.
+Requires Node >= 22.12.0.
 
 ```bash
 npm install -g ultracontext
+```
+
+## Run it locally — free, forever
+
+UltraContext is **100% free and self-hosted**. One command runs the entire product
+on your own machine: the API, the MCP endpoint, full-text search, and storage in a
+local SQLite file. No account, no Docker, no Postgres, no network.
+
+```bash
+ultracontext serve
+```
+
+```
+UltraContext is running locally.
+  API      http://127.0.0.1:8787
+  MCP      http://127.0.0.1:8787/mcp
+  Search   http://127.0.0.1:8787/contexts/search?q=…
+  Stats    http://127.0.0.1:8787/contexts/stats?bucket=day
+
+  API key  uc_live_…          (stored in ~/.ultracontext/server.json, mode 0600)
+
+Free and self-hosted. No account, no quota, no paywall, no network required.
+```
+
+On first run it generates an admin key and an API key, writes them to
+`~/.ultracontext/` with `0600` permissions, and prints a ready-to-paste command
+for connecting an agent. Everything stays on your disk.
+
+```bash
+ultracontext serve --port 9000     # pick a port
+DATABASE_PROVIDER=postgres DATABASE_URL=… ultracontext serve    # or bring your own Postgres
 ```
 
 ## Quick Start
@@ -92,6 +126,9 @@ That's it. UltraContext watches your agents, ingests context in realtime, and th
 
 ```bash
 ultracontext sync     # start sync (daemon + dashboard)
+ultracontext serve    # run the context server locally (SQLite, free)
+ultracontext stats    # usage analytics for everything you captured (free)
+ultracontext switch   # continue a session in a different agent
 ultracontext stop     # stop daemon
 ultracontext config   # run setup wizard
 ultracontext update   # update CLI globally
@@ -102,9 +139,77 @@ ultracontext update   # update CLI globally
 For builders who want to go deeper. Git-like primitives for context engineering.
 
 - **Five methods** — Create, get, append, update, delete. That's it.
-- **Automatic versioning** — Every change creates a new version. Full history out of the box.
-- **Time-travel** — Jump to any point in your context history.
+- **Automatic versioning** — Edits and deletes create a new version. Full history out of the box.
+- **Time-travel** — Jump to any point in your context history, by version or by timestamp.
+- **Full-text search** — Query every captured session by what it says.
+- **Analytics** — Totals, per-agent breakdown and a day/week/month series, computed over your own data.
 - **Framework-agnostic** — Works with any LLM framework. No vendor lock-in.
+
+### Search
+
+Find a plan, a decision, or an error without knowing which session it was in.
+
+```typescript
+const { data } = await uc.search({ query: 'refactor the auth middleware' });
+// → [{ context_id, message_id, content, metadata: { source, user_id, session_id }, created_at }]
+```
+
+```python
+results = uc.search(query="refactor the auth middleware")
+```
+
+Search is **free and unmetered** — there is no query quota. Locally it runs on
+SQLite FTS5 (porter stemming, bm25 ranking, prefix matching); on Postgres it uses
+`tsvector` ranking. It never leaves your machine.
+
+### Analytics
+
+See what you have captured, by agent and over time — no telemetry pipeline, no
+third party, and no retention window that quietly truncates your history.
+
+```bash
+ultracontext stats --bucket day --days 30
+```
+
+```
+UltraContext Stats  by day · 2026-09-09 → 2026-09-11
+
+  messages    7   sessions   4   sources  3
+  contexts    8   nodes      15   active   1
+
+  ▁▁█
+
+  2026-09-09         0
+  2026-09-10         0
+  2026-09-11  ████████████████████████████       7
+
+  By source
+  claude   ████████████████████████████       7 msgs
+```
+
+```typescript
+const stats = await uc.stats({ bucket: 'week', days: 12 });
+// → { bucket, from, to, totals: { messages, contexts, root_contexts, sources, … },
+//     by_source: [{ source, messages, … }], series: [{ bucket_start, messages, … }] }
+```
+
+```bash
+curl -H "Authorization: Bearer $ULTRACONTEXT_API_KEY" \
+  "$ULTRACONTEXT_BASE_URL/contexts/stats?bucket=month&days=12"
+```
+
+Agents can ask too — the MCP server exposes `get_activity_stats`.
+
+Running Postgres? Point any BI tool (Metabase, Grafana, Superset, plain `psql`)
+at the `project_activity_daily` / `project_activity_weekly` views in
+[apps/postgres/init.sql](./apps/postgres/init.sql). It is your database; nothing
+is hidden behind an API we control.
+
+### No paywall, ever
+
+UltraContext is Apache-2.0 and self-hostable in full. Every capability — search,
+analytics, versioning, forking, the MCP server, all six agent integrations — is
+available free, with no account and no usage cap. There is no paid tier to unlock.
 
 Use the API standalone to build your own agents, or extend existing ones in UltraContext.
 

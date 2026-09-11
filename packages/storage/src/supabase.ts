@@ -1,6 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, TransactionOptions } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import { aggregateActivity } from '@ultracontext/core';
+import type { ActivityAggregateInput } from '@ultracontext/core';
 
 // =============================================================================
 // SUPABASE ADAPTER — same interface via Supabase REST client
@@ -60,20 +62,6 @@ export class SupabaseAdapter implements StorageAdapter {
             .from('nodes')
             .select('public_id')
             .eq('project_id', projectId)
-            .eq('public_id', publicId)
-            .eq('type', 'context')
-            .is('context_id', null)
-            .limit(1)
-            .single();
-        if (error && error.code === 'PGRST116') return null;
-        if (error) throw error;
-        return data;
-    }
-
-    async findRootContextByPublicId(publicId: string) {
-        const { data, error } = await this.client
-            .from('nodes')
-            .select('public_id')
             .eq('public_id', publicId)
             .eq('type', 'context')
             .is('context_id', null)
@@ -157,6 +145,128 @@ export class SupabaseAdapter implements StorageAdapter {
             .eq('project_id', projectId)
             .in('parent_id', parentIds);
         if (error) throw error;
+    }
+
+    // -- api keys -------------------------------------------------------------
+
+    // PostgREST has no tsvector ranking over jsonb without an RPC, so this falls
+    // back to a case-insensitive match and orders by recency. Callers that need
+    // ranked full-text search should use Postgres (DrizzleAdapter) or SQLite.
+    async searchMessages(projectId: number, query: string, filters: SearchFilters, limit: number): Promise<SearchHit[]> {
+        const needle = `%${query.replace(/[%,]/g, '')}%`;
+
+        let rows: Array<Record<string, any>> = [];
+        try {
+            let request = this.client
+                .from('nodes')
+                .select('public_id, context_id, content, metadata, created_at')
+                .eq('project_id', projectId)
+                .neq('type', 'context')
+                .or(`content->>message.ilike.${needle},content->>text.ilike.${needle}`);
+
+            if (filters.source) request = request.eq('metadata->>source', filters.source);
+            if (filters.user_id) request = request.eq('metadata->>user_id', filters.user_id);
+            if (filters.host) request = request.eq('metadata->>host', filters.host);
+            if (filters.session_id) request = request.eq('metadata->>session_id', filters.session_id);
+            if (filters.project_path) request = request.eq('metadata->>project_path', filters.project_path);
+            if (filters.after) request = request.gt('created_at', filters.after);
+            if (filters.before) request = request.lt('created_at', filters.before);
+
+            const { data, error } = await request
+                .order('created_at', { ascending: false })
+                .limit(limit);
+            if (error) throw error;
+            rows = (data ?? []) as Array<Record<string, any>>;
+        } catch (error) {
+            // PostgREST rejects the ->  operator on some deployments; surface as empty,
+            // never as a 500 — search is a convenience, not a critical path.
+            console.error(`searchMessages failed: ${error instanceof Error ? error.message : String(error)}`);
+            return [];
+        }
+
+        // resolve root context ids for the matched branch heads
+        const branchIds = [...new Set(rows.map((r) => r.context_id).filter(Boolean))];
+        const rootByBranch = new Map<string, string>();
+        if (branchIds.length > 0) {
+            const { data: heads } = await this.client
+                .from('nodes')
+                .select('public_id, context_id')
+                .in('public_id', branchIds)
+                .eq('type', 'context');
+            for (const head of heads ?? []) rootByBranch.set(head.public_id, head.context_id);
+        }
+
+        return rows.map((row) => ({
+            context_id: String(rootByBranch.get(row.context_id) ?? row.context_id ?? ''),
+            branch_id: String(row.context_id ?? ''),
+            message_id: String(row.public_id),
+            content: String(row.content?.message ?? row.content?.text ?? ''),
+            metadata: (row.metadata ?? {}) as Record<string, unknown>,
+            created_at: String(row.created_at ?? ''),
+            rank: 0,
+        }));
+    }
+
+    // -- activity / analytics -------------------------------------------------
+
+    // Prefer the server-side rollup (ultracontext_activity, defined in
+    // apps/postgres/init.sql). Deployments that have not applied the latest
+    // schema fall back to a paged client-side rollup instead of failing —
+    // analytics is free here, and a missing helper must never 500 the API.
+    async projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        try {
+            const { data, error } = await this.client.rpc('ultracontext_activity', {
+                p_project_id: projectId,
+                p_from: query.from ?? null,
+                p_to: query.to ?? null,
+                p_bucket: query.bucket,
+                p_source: query.source ?? null,
+            });
+
+            if (!error && Array.isArray(data)) {
+                return (data as Array<Record<string, any>>).map((row) => ({
+                    bucket_start: String(row.bucket_start ?? ''),
+                    source: String(row.source ?? 'unknown'),
+                    node_count: Number(row.node_count ?? 0),
+                    message_count: Number(row.message_count ?? 0),
+                    context_count: Number(row.context_count ?? 0),
+                    root_context_count: Number(row.root_context_count ?? 0),
+                    first_event_at: String(row.first_event_at ?? ''),
+                    last_event_at: String(row.last_event_at ?? ''),
+                }));
+            }
+        } catch {
+            // no helper deployed yet — fall through to the client-side rollup
+        }
+
+        return this.aggregateActivityPaged(projectId, query);
+    }
+
+    private async aggregateActivityPaged(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        const PAGE = 1000;
+        const MAX_ROWS = 200_000;
+        const rows: Array<Record<string, any>> = [];
+
+        for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
+            let request = this.client
+                .from('nodes')
+                .select('created_at, type, context_id, metadata')
+                .eq('project_id', projectId)
+                .order('created_at', { ascending: true })
+                .range(offset, offset + PAGE - 1);
+
+            if (query.from) request = request.gte('created_at', query.from);
+            if (query.to) request = request.lt('created_at', query.to);
+
+            const { data, error } = await request;
+            if (error) throw error;
+            if (!data || data.length === 0) break;
+
+            rows.push(...(data as Array<Record<string, any>>));
+            if (data.length < PAGE) break;
+        }
+
+        return aggregateActivity(rows as ActivityAggregateInput[], query);
     }
 
     // -- api keys -------------------------------------------------------------

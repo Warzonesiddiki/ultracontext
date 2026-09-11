@@ -26,9 +26,15 @@ export type ListResponse<T> = {
 // APP CONFIGURATION TYPES
 // =============================================================================
 
-export type DatabaseProvider = 'postgres' | 'supabase';
+export type DatabaseProvider = 'postgres' | 'supabase' | 'sqlite';
 
 export type ApiConfig =
+    | {
+          // fully local, self-hosted: a SQLite file on disk. No external service.
+          DATABASE_PROVIDER: 'sqlite';
+          DATABASE_FILE: string;
+          ULTRACONTEXT_ADMIN_KEY: string;
+      }
     | {
           DATABASE_PROVIDER: 'postgres';
           DATABASE_URL: string;

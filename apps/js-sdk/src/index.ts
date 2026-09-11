@@ -82,6 +82,77 @@ export type UpdateResponse<T = unknown> = {
     version: number;
 };
 
+export type SearchInput = {
+    query: string;
+    limit?: number;
+    source?: string;
+    user_id?: string;
+    host?: string;
+    project_path?: string;
+    session_id?: string;
+    after?: string;
+    before?: string;
+};
+
+export type SearchHit = {
+    context_id: string;
+    branch_id: string;
+    message_id: string;
+    content: string;
+    metadata: Record<string, unknown>;
+    created_at: string;
+    rank: number;
+};
+
+export type SearchResponse = {
+    query: string;
+    limit: number;
+    data: SearchHit[];
+};
+
+// -- activity / analytics -----------------------------------------------------
+
+export type ActivityInput = {
+    bucket?: 'day' | 'week' | 'month';
+    days?: number;
+    from?: string;
+    to?: string;
+    source?: string;
+};
+
+export type ActivityPoint = {
+    bucket_start: string;
+    nodes: number;
+    messages: number;
+    contexts: number;
+    root_contexts: number;
+    first_event_at: string | null;
+    last_event_at: string | null;
+    sources: string[];
+};
+
+export type ActivityStats = {
+    bucket: 'day' | 'week' | 'month';
+    from: string;
+    to: string;
+    totals: {
+        nodes: number;
+        messages: number;
+        contexts: number;
+        root_contexts: number;
+        sources: number;
+        active_buckets: number;
+    };
+    by_source: Array<{
+        source: string;
+        nodes: number;
+        messages: number;
+        contexts: number;
+        root_contexts: number;
+    }>;
+    series: ActivityPoint[];
+};
+
 export type DeleteInput = (string | number) | (string | number)[];
 
 // Unified delete input — either message ids (soft, versioned) OR {permanent: true} (hard, irreversible)
@@ -219,6 +290,38 @@ export class UltraContext {
             method: 'DELETE',
             body: { ids: input as DeleteInput, metadata: options?.metadata },
         });
+    }
+
+    // Full-text search across all captured context. Free and unmetered —
+    // there is no query quota and no paywall.
+    async search(input: SearchInput): Promise<SearchResponse> {
+        const params = new URLSearchParams();
+        params.set('q', input.query);
+        if (input.limit !== undefined) params.set('limit', String(input.limit));
+        if (input.source) params.set('source', input.source);
+        if (input.user_id) params.set('user_id', input.user_id);
+        if (input.host) params.set('host', input.host);
+        if (input.project_path) params.set('project_path', input.project_path);
+        if (input.session_id) params.set('session_id', input.session_id);
+        if (input.after) params.set('after', input.after);
+        if (input.before) params.set('before', input.before);
+
+        return this.request<SearchResponse>(`/contexts/search?${params.toString()}`, { method: 'GET' });
+    }
+
+    // Usage analytics — free, unmetered, computed from your own database.
+    // The commercial tier charges for analytics and caps history on paid plans;
+    // nothing here is gated and no retention window truncates your history.
+    async stats(input: ActivityInput = {}): Promise<ActivityStats> {
+        const params = new URLSearchParams();
+        if (input.bucket) params.set('bucket', input.bucket);
+        if (input.days !== undefined) params.set('days', String(input.days));
+        if (input.from) params.set('from', input.from);
+        if (input.to) params.set('to', input.to);
+        if (input.source) params.set('source', input.source);
+
+        const query = params.toString();
+        return this.request<ActivityStats>(`/contexts/stats${query ? `?${query}` : ''}`, { method: 'GET' });
     }
 
     async deleteMany(ids: string[]): Promise<DeleteManyResponse> {

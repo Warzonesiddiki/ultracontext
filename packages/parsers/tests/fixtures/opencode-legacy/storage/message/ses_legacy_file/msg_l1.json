@@ -1,0 +1,6 @@
+{
+  "role": "user",
+  "time": { "created": 1789045200000 },
+  "agent": "build",
+  "model": { "providerID": "anthropic", "modelID": "claude-sonnet-4" }
+}

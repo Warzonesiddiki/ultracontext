@@ -59,7 +59,7 @@ Open source. Framework-agnostic. Customizable via the git-like Context API.
 
 ## Features
 
-| CLI | Auto-ingest Claude Code, Codex, OpenClaw, Cursor, Gemini and gstack sessions with a terminal dashboard. |
+| CLI | Auto-ingest sessions from Claude Code, Codex, Cursor, Gemini CLI, OpenClaw, opencode, Antigravity (agy), Freebuff and gstack, with a terminal dashboard. |
 | --- | --- |
 | MCP Server | Share context everywhere. Built into the API, or run standalone via stdio. |
 | Context API | Git-like context engineering API. Store, version, and retrieve agent context with zero complexity. |
@@ -133,6 +133,35 @@ ultracontext stop     # stop daemon
 ultracontext config   # run setup wizard
 ultracontext update   # update CLI globally
 ```
+
+## Agent integrations
+
+UltraContext ingests sessions from every AI coding harness you run, straight from
+its on-disk store. All sources are on by default; disable any of them with the
+`INGEST_<NAME>=0` env var (or point the glob at a custom location).
+
+| Source | What it reads | Default location |
+| --- | --- | --- |
+| `claude` | Claude Code JSONL sessions | `~/.claude/projects/**/*.jsonl` |
+| `codex` | Codex CLI JSONL sessions | `~/.codex/sessions/**/*.jsonl` |
+| `cursor` | Cursor JSONL sessions | `~/.cursor/projects/**/*.jsonl` |
+| `gemini` | Gemini CLI JSON chat files | `~/.gemini/tmp/*/chats/session-*.json` |
+| `openclaw` | OpenClaw JSONL sessions | `~/.openclaw/agents/*/sessions/**/*.jsonl` |
+| `opencode` | opencode's SQLite DB (v1.2.0+, both current `session_message` and older `message`/`part` schemas) plus the pre-1.2 JSON storage layout | `${XDG_DATA_HOME:-~/.local/share}/opencode` (`OPENCODE_DATA_DIR` accepts a comma-separated list) |
+| `agy` | Google Antigravity CLI/IDE JSONL transcripts (untruncated) | `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl` + `~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl` |
+| `freebuff` | Freebuff (CodebuffAI) `chat-messages.json` per chat | `~/.config/manicode/projects/*/chats/*/chat-messages.json` |
+| `gstack` | gstack skill artifacts | `~/.gstack/projects/**/*.jsonl` |
+
+Notes:
+
+- **Ingest-only where marked.** `ultracontext switch` (continue a session in a
+  different agent) currently has writers for `claude` and `codex` only. The other
+  sources are ingested and searchable; they cannot be written back to.
+- Antigravity (`agy`) scans the CLI store and the IDE store, deliberately
+  skipping the `antigravity-ide` and `antigravity-backup` siblings so the same
+  conversation is not captured two or three times.
+- opencode reads its database **read-only** — it never locks or modifies the
+  file, even while opencode is running.
 
 ## Context API
 
@@ -208,7 +237,7 @@ is hidden behind an API we control.
 ### No paywall, ever
 
 UltraContext is Apache-2.0 and self-hostable in full. Every capability — search,
-analytics, versioning, forking, the MCP server, all six agent integrations — is
+analytics, versioning, forking, the MCP server, every agent integration — is
 available free, with no account and no usage cap. There is no paid tier to unlock.
 
 Use the API standalone to build your own agents, or extend existing ones in UltraContext.

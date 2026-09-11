@@ -19,7 +19,8 @@ import { acquireFileLock, resolveLockPath } from "./lock.mjs";
 import { redact } from "./redact.mjs";
 import {
   parseClaudeCodeLine, parseCodexLine, parseGstackLine, parseOpenClawLine,
-  parseCursorLine, parseGeminiFile,
+  parseCursorLine, parseGeminiFile, parseOpencodeFile, parseAgyLine,
+  parseFreebuffFile,
 } from "@ultracontext/parsers";
 import { boolFromEnv, expandHome, extractProjectPathFromFile, sha256, toInt } from "./utils.mjs";
 import {
@@ -537,6 +538,40 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
       sources.push({ name: "gstack", enabled: true, globs: [gstackGlob], parseLine: parseGstackLine });
     }
 
+    // opencode — SQLite DB (≥1.2.0: opencode.db, v1 message/part or v2
+    // session_message schema) plus the pre-1.2 JSON "storage" layout.
+    // Data dir: ${XDG_DATA_HOME:-~/.local/share}/opencode (see parser header).
+    // OPENCODE_DATA_DIR accepts a comma-separated list of data dirs.
+    const xdgData = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
+    const opencodeDataDir = process.env.OPENCODE_DATA_DIR || `${xdgData}/opencode`;
+    const opencodeGlobs = String(opencodeDataDir)
+      .split(",").map((d) => expandHome(d.trim())).filter(Boolean)
+      .flatMap((dir) => [
+        `${dir}/opencode*.db`,                      // current: SQLite DB
+        `${dir}/storage/message/*/*.json`,           // pre-1.2: message files
+        `${dir}/storage/session/message/*/*.json`,   // migration-era: message files
+      ]);
+    if (boolFromEnv(process.env.INGEST_OPENCODE, true)) {
+      sources.push({ name: "opencode", enabled: true, globs: opencodeGlobs, parseFile: parseOpencodeFile, readBinary: true });
+    }
+
+    // agy (Google Antigravity CLI/IDE) — JSONL step transcripts.
+    // Only antigravity-cli (full, untruncated) + antigravity (IDE) are scanned;
+    // the -ide/-backup siblings would duplicate the same conversations.
+    const agyGlobs = [
+      expandHome(process.env.AGY_GLOB ?? "~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl"),
+      expandHome("~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl"),
+    ];
+    if (boolFromEnv(process.env.INGEST_AGY, true)) {
+      sources.push({ name: "agy", enabled: true, globs: agyGlobs, parseLine: parseAgyLine });
+    }
+
+    // freebuff (CodebuffAI/freebuff) — chat-messages.json per chat
+    const freebuffGlob = expandHome(process.env.FREEBUFF_GLOB ?? "~/.config/manicode/projects/*/chats/*/chat-messages.json");
+    if (boolFromEnv(process.env.INGEST_FREEBUFF, true)) {
+      sources.push({ name: "freebuff", enabled: true, globs: [freebuffGlob], parseFile: parseFreebuffFile });
+    }
+
     return sources;
   }
 
@@ -547,11 +582,13 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     });
   }
 
-  // pull cwd out of a parser-normalized record (handles codex session_meta shape)
+  // pull cwd out of a parser-normalized record (handles codex session_meta shape,
+  // opencode's session.directory / v1 message path.cwd)
   function extractProjectPathFromNormalized(normalized) {
     const candidates = [
       normalized?.raw?.payload?.cwd,
       normalized?.raw?.cwd,
+      normalized?.raw?.directory,
     ];
 
     for (const candidate of candidates) {
@@ -652,9 +689,10 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
         const stat = await fs.stat(filePath);
         const fileId = `${stat.dev}:${stat.ino}`;
 
-        // JSON-format sources (e.g. Gemini): store content hash to match processFile's comparison
+        // JSON-format sources (e.g. Gemini) and binary formats (opencode DB):
+        // store content hash to match processFile's comparison
         if (source.parseFile) {
-          const contents = await fs.readFile(filePath, "utf8");
+          const contents = source.readBinary ? await fs.readFile(filePath) : await fs.readFile(filePath, "utf8");
           store.setOffset(offsetStoreKey(source.name, fileId), sha256(contents));
         } else {
           store.setOffset(offsetStoreKey(source.name, fileId), stat.size);
@@ -975,13 +1013,19 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
       const offsetKey = offsetStoreKey(source.name, fileId);
       const fileProjectPath = await resolveSourceFileProjectPath({ source, filePath, fileId });
 
-      if (!matchesConfiguredProjectPath(cfg.projectPaths, fileProjectPath)) {
+      // whole-file sources (parseFile) filter per-event below — an unknown
+      // file-level path must not skip the whole file (e.g. an opencode DB
+      // holds sessions from many projects); JSONL sources keep the file gate
+      if (!source.parseFile && !matchesConfiguredProjectPath(cfg.projectPaths, fileProjectPath)) {
         return;
       }
 
-      // JSON-format sources (e.g. Gemini): read entire file, dedup by content hash
+      // JSON-format sources (e.g. Gemini) and binary formats (opencode's
+      // SQLite DB): read entire file, dedup by content hash
       if (source.parseFile) {
-        const fileContents = await fs.readFile(filePath, "utf8");
+        const fileContents = source.readBinary
+          ? await fs.readFile(filePath)
+          : await fs.readFile(filePath, "utf8");
         const contentHash = sha256(fileContents);
         const storedHash = store.getOffset(offsetKey);
         if (storedHash === contentHash) return;
@@ -1000,6 +1044,11 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
           if (!normalized || !normalized.sessionId) continue;
           if (ingestMode === "last_24h" && !isWithinLast24h(normalized.timestamp)) continue;
 
+          // per-event project path (e.g. opencode DB rows carry session.cwd /
+          // session.directory) falls back to the file-level discovery
+          const eventProjectPath = extractProjectPathFromNormalized(normalized) || fileProjectPath;
+          if (!matchesConfiguredProjectPath(cfg.projectPaths, eventProjectPath)) continue;
+
           bumpStat("parsedEvents");
           bumpSourceStat(source.name, "parsedEvents");
           noteSourceActivity(source.name, { lastEventType: normalized.eventType, lastSessionId: normalized.sessionId, lastAt: Date.now() });
@@ -1008,7 +1057,7 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
           const isNew = markEventSeen(store, source.name, eventId);
           if (!isNew) { bumpStat("deduped"); bumpSourceStat(source.name, "deduped"); continue; }
 
-          pendingEvents.push({ normalized, eventId, lineOffset: i, projectPath: fileProjectPath });
+          pendingEvents.push({ normalized, eventId, lineOffset: i, projectPath: eventProjectPath });
         }
 
         if (pendingEvents.length > 0) {

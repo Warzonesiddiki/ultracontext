@@ -410,6 +410,10 @@ const T = [
  file:"apps/sync/ · apps/mcp-server/",
  d:"The daemon and MCP server still require the hosted API. Wire them to the local SQLite server started by `ultracontext serve`, so the entire product runs with zero network. This is the strongest trust lever for a tool that reads agent transcripts.",
  acc:"`ultracontext serve` + `ultracontext sync` form a complete, offline context system."},
+{id:"FREE-008",sev:"P2",ph:3,eff:"L",area:"Promise",t:"Universal harness coverage — opencode, Antigravity (agy), Freebuff — SHIPPED",
+ file:"packages/parsers/src/agents/{opencode,agy,freebuff}.mjs · apps/sync/src/daemon.mjs (buildSources, readBinary, per-event project paths)",
+ d:"DONE. The commercial site lists integrations the free fork didn't have. Three more harnesses are now ingested, all verified against on-disk reality (no guessed paths): opencode reads its SQLite DB read-only (node:sqlite) — both the current session_message schema and the older message/part schema, plus the pre-1.2 JSON storage layout; Antigravity (agy) reads the untruncated CLI transcript and the IDE transcript, skipping the -ide/-backup duplicate siblings; Freebuff (CodebuffAI) reads chat-messages.json under ~/.config/manicode/projects/<project>/chats/<chatId>/. The source contract gained readBinary (whole-file binary reads, content-hash dedup) and per-event project paths (opencode rows carry session.directory / v1 path.cwd). Every new harness is behind INGEST_<NAME> and on by default. Ingest-only: `ultracontext switch` writers exist for claude and codex only, and the README says so. End-to-end verified: daemon → local `ultracontext serve`, all 5 opencode layouts + agy + freebuff ingested, idempotent on re-run, incremental on change.",
+ acc:"`ultracontext sync` captures opencode, agy and freebuff sessions offline; 29 new parser tests green (98 total in packages/parsers)."},
 
 ];
 

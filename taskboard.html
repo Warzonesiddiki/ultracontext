@@ -111,8 +111,8 @@
 <div class="controls">
   <div class="grp"><span>Severity</span>
     <button data-f="sev" data-v="P0" class="on">P0 · 6</button>
-    <button data-f="sev" data-v="P1" class="on">P1 · 21</button>
-    <button data-f="sev" data-v="P2" class="on">P2 · 31</button>
+    <button data-f="sev" data-v="P1" class="on">P1 · 22</button>
+    <button data-f="sev" data-v="P2" class="on">P2 · 30</button>
     <button data-f="sev" data-v="P3" class="on">P3 · 5</button>
   </div>
   <div class="grp"><span>Effort</span>
@@ -398,10 +398,10 @@ const T = [
  file:"apps/api/src/serve.ts · apps/js-sdk/src/cli/serve.mjs",
  d:"DONE. One command runs the whole product locally: API + MCP + search + SQLite. On first run it generates an admin key and an API key, stores them at ~/.ultracontext/server.json with mode 0600 (dir 0700), and prints a ready-to-paste `claude mcp add` command. Restarts are idempotent — keys are reused. Also fixes SEC-004 in practice for the serve path.",
  acc:"`ultracontext serve` works from a clean machine with no configuration."},
-{id:"FREE-005",sev:"P2",ph:3,eff:"M",area:"Promise",t:"Analytics — the activity views are built but unused",
- file:"apps/postgres/init.sql (project_activity_daily / _weekly)",
- d:"init.sql already defines project_activity_daily and project_activity_weekly views, but NOTHING in the codebase queries them. The commercial version charges for 'Analytics' / 'Unlimited analytics'. Wiring them to an endpoint and a CLI view is a cheap, high-visibility win.",
- acc:"`ultracontext stats` and GET /v1/stats surface daily/weekly activity."},
+{id:"FREE-005",sev:"P1",ph:3,eff:"M",area:"Promise",t:"Analytics — free, computed from your own data — SHIPPED",
+ file:"packages/core/src/ops/analytics.ts · packages/storage (all 4 adapters) · GET /contexts/stats · cli/stats.mjs · MCP get_activity_stats",
+ d:"DONE. The commercial tier sells 'Analytics' and gates 'Unlimited analytics' behind Pro. Here analytics is a GROUP BY over rows you already own. StorageAdapter gained projectActivity(projectId, {bucket,from,to,source}); SQLite, Postgres/Drizzle and Supabase aggregate in SQL (Supabase uses a new ultracontext_activity() function, with a paged JS fallback so an un-migrated schema never 500s), and the shared JS rollup covers memory + fallback. Core does gap-filling, totals and per-source ranking, so every backend returns an identical shape. Buckets are UTC and weeks start on Monday, matching Postgres date_trunc. Surfaces: GET /contexts/stats, `ultracontext stats --bucket day|week|month` (sparkline + bar chart), uc.stats(), and the MCP tool get_activity_stats. The Postgres views project_activity_daily/_weekly stay in init.sql so any BI tool can query them directly — it is your database.",
+ acc:"`ultracontext stats` renders totals + series + per-source bars offline; GET /contexts/stats is tenant-scoped; 19 new tests green (core 13, sqlite 6, api 6 incl. one asserting the response never says upgrade/plan/quota)."},
 {id:"FREE-006",sev:"P2",ph:3,eff:"M",area:"Promise",t:"Backups and log retention",
  file:"new CLI commands",
  d:"The commercial Pro tier sells 'Backups + log retention' and Enterprise sells 'Custom retention'. Free and self-hosted should include both: `ultracontext backup` (snapshot the SQLite file safely, including WAL) and `ultracontext gc` (prune events older than a retention window).",

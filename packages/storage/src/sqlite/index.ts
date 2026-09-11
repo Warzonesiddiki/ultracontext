@@ -2,7 +2,7 @@ import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-or
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
 import { createClient } from '@libsql/client';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { searchableText } from '@ultracontext/core';
 import { schema, nodes, api_keys, projects, SCHEMA_SQL } from './schema';
 
@@ -15,6 +15,21 @@ type SqliteDb = LibSQLDatabase<typeof schema>;
 function parseJson<T>(value: unknown, fallback: T): T {
     if (typeof value !== 'string') return (value as T) ?? fallback;
     try { return JSON.parse(value) as T; } catch { return fallback; }
+}
+
+// Normalise a raw activity row: every driver hands back slightly different
+// types (bigint counts, numeric strings), so coerce once, here.
+function toActivityRow(row: Record<string, unknown>): ActivityRow {
+    return {
+        bucket_start: String(row.bucket_start ?? ''),
+        source: String(row.source ?? 'unknown'),
+        node_count: Number(row.node_count ?? 0),
+        message_count: Number(row.message_count ?? 0),
+        context_count: Number(row.context_count ?? 0),
+        root_context_count: Number(row.root_context_count ?? 0),
+        first_event_at: String(row.first_event_at ?? ''),
+        last_event_at: String(row.last_event_at ?? ''),
+    };
 }
 
 // -- url normalisation --------------------------------------------------------
@@ -250,6 +265,45 @@ export class SqliteAdapter implements StorageAdapter {
             rank: Number(row.rank ?? 0),
         }));
     }
+
+    // -- activity / analytics -------------------------------------------------
+
+    // Server-side rollup — SQLite does the GROUP BY, we only format the window.
+    // Weeks start on Monday (`weekday 1` after shifting back 6 days) so the
+    // buckets line up exactly with Postgres date_trunc('week') and with JS.
+    async projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        const bucketExpr =
+            query.bucket === 'week'
+                ? sql`date(n.created_at, '-6 days', 'weekday 1')`
+                : query.bucket === 'month'
+                  ? sql`substr(n.created_at, 1, 7) || '-01'`
+                  : sql`substr(n.created_at, 1, 10)`;
+
+        const conditions = [sql`n.project_id = ${projectId}`];
+        if (query.from) conditions.push(sql`n.created_at >= ${query.from}`);
+        if (query.to) conditions.push(sql`n.created_at < ${query.to}`);
+        if (query.source) conditions.push(sql`json_extract(n.metadata, '$.source') = ${query.source}`);
+
+        const rows = await this.db.all(sql`
+            SELECT
+                ${bucketExpr}                                                        AS bucket_start,
+                COALESCE(NULLIF(json_extract(n.metadata, '$.source'), ''), 'unknown') AS source,
+                COUNT(*)                                                             AS node_count,
+                SUM(CASE WHEN n.type <> 'context' THEN 1 ELSE 0 END)                 AS message_count,
+                SUM(CASE WHEN n.type = 'context' THEN 1 ELSE 0 END)                  AS context_count,
+                SUM(CASE WHEN n.type = 'context' AND n.context_id IS NULL THEN 1 ELSE 0 END) AS root_context_count,
+                MIN(n.created_at)                                                    AS first_event_at,
+                MAX(n.created_at)                                                    AS last_event_at
+            FROM ${nodes} n
+            WHERE ${sql.join(conditions, sql` AND `)}
+            GROUP BY bucket_start, source
+            ORDER BY bucket_start, source
+        `);
+
+        return (rows as unknown[]).map((row) => toActivityRow((row ?? {}) as Record<string, unknown>));
+    }
+
+    // -- api keys -------------------------------------------------------------
 
     async findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null> {
         const rows = await this.db

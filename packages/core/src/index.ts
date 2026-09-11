@@ -14,6 +14,9 @@ export type {
     SearchFilters,
     SearchHit,
     TransactionOptions,
+    ActivityBucket,
+    ActivityQuery,
+    ActivityRow,
 } from './storage';
 
 // -- message view -------------------------------------------------------------
@@ -40,6 +43,18 @@ export { getContextMessages } from './ops/get-context-messages';
 export { searchMessages, searchableText, snippet } from './ops/search';
 export type { SearchInput, SearchResultData } from './ops/search';
 export { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_LEN } from './ops/search';
+
+// -- activity / analytics (free, computed from your own data) -----------------
+export { getProjectActivity, aggregateActivity, bucketStart } from './ops/analytics';
+export type {
+    ActivityInput,
+    ActivityResultData,
+    ActivityPoint,
+    ActivityTotals,
+    ActivitySourceTotal,
+    ActivityAggregateInput,
+} from './ops/analytics';
+export { DEFAULT_ACTIVITY_DAYS, MAX_ACTIVITY_BUCKETS } from './ops/analytics';
 
 export { createContext } from './ops/create-context';
 export type { CreateContextInput } from './ops/create-context';

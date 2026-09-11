@@ -1,6 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import { aggregateActivity } from '@ultracontext/core';
+import type { ActivityAggregateInput } from '@ultracontext/core';
 
 // =============================================================================
 // SUPABASE ADAPTER — same interface via Supabase REST client
@@ -218,6 +220,70 @@ export class SupabaseAdapter implements StorageAdapter {
             rank: 0,
         }));
     }
+
+    // -- activity / analytics -------------------------------------------------
+
+    // Prefer the server-side rollup (ultracontext_activity, defined in
+    // apps/postgres/init.sql). Deployments that have not applied the latest
+    // schema fall back to a paged client-side rollup instead of failing —
+    // analytics is free here, and a missing helper must never 500 the API.
+    async projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        try {
+            const { data, error } = await this.client.rpc('ultracontext_activity', {
+                p_project_id: projectId,
+                p_from: query.from ?? null,
+                p_to: query.to ?? null,
+                p_bucket: query.bucket,
+                p_source: query.source ?? null,
+            });
+
+            if (!error && Array.isArray(data)) {
+                return (data as Array<Record<string, any>>).map((row) => ({
+                    bucket_start: String(row.bucket_start ?? ''),
+                    source: String(row.source ?? 'unknown'),
+                    node_count: Number(row.node_count ?? 0),
+                    message_count: Number(row.message_count ?? 0),
+                    context_count: Number(row.context_count ?? 0),
+                    root_context_count: Number(row.root_context_count ?? 0),
+                    first_event_at: String(row.first_event_at ?? ''),
+                    last_event_at: String(row.last_event_at ?? ''),
+                }));
+            }
+        } catch {
+            // no helper deployed yet — fall through to the client-side rollup
+        }
+
+        return this.aggregateActivityPaged(projectId, query);
+    }
+
+    private async aggregateActivityPaged(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        const PAGE = 1000;
+        const MAX_ROWS = 200_000;
+        const rows: Array<Record<string, any>> = [];
+
+        for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
+            let request = this.client
+                .from('nodes')
+                .select('created_at, type, context_id, metadata')
+                .eq('project_id', projectId)
+                .order('created_at', { ascending: true })
+                .range(offset, offset + PAGE - 1);
+
+            if (query.from) request = request.gte('created_at', query.from);
+            if (query.to) request = request.lt('created_at', query.to);
+
+            const { data, error } = await request;
+            if (error) throw error;
+            if (!data || data.length === 0) break;
+
+            rows.push(...(data as Array<Record<string, any>>));
+            if (data.length < PAGE) break;
+        }
+
+        return aggregateActivity(rows as ActivityAggregateInput[], query);
+    }
+
+    // -- api keys -------------------------------------------------------------
 
     async findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null> {
         const { data, error } = await this.client

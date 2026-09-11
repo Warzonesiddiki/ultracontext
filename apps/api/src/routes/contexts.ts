@@ -5,6 +5,7 @@ import {
     deleteManyContexts,
     deleteMessages,
     getContext,
+    getProjectActivity,
     isPlainObject,
     listContexts,
     resultStatus,
@@ -88,6 +89,44 @@ export function registerContextRoutes(app: HttpApp) {
             session_id: c.req.query('session_id') ?? undefined,
             after: c.req.query('after') ?? undefined,
             before: c.req.query('before') ?? undefined,
+        });
+
+        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        return c.json(result.data);
+    });
+
+    // -- activity / analytics (must be registered before :id routes) ------------
+
+    // Free analytics, computed on demand from your own database. The commercial
+    // tier sells analytics and gates "unlimited analytics" behind Pro — there is
+    // nothing to unlock here and no history window that silently truncates.
+    //   GET /contexts/stats?bucket=day|week|month&days=30&from=…&to=…&source=…
+    app.get('/contexts/stats', async (c) => {
+        const { projectId } = c.get('auth');
+        const storage = c.get('storage');
+
+        const bucket = c.req.query('bucket') ?? 'day';
+        if (bucket !== 'day' && bucket !== 'week' && bucket !== 'month') {
+            return c.json({ error: `Invalid bucket '${bucket}'. Use day, week or month.` }, 400);
+        }
+
+        const from = c.req.query('from');
+        const to = c.req.query('to');
+        if (from !== undefined && isNaN(Date.parse(from))) return c.json({ error: 'Invalid from timestamp' }, 400);
+        if (to !== undefined && isNaN(Date.parse(to))) return c.json({ error: 'Invalid to timestamp' }, 400);
+
+        const daysRaw = c.req.query('days');
+        const days = daysRaw === undefined ? undefined : parseInt(daysRaw);
+        if (daysRaw !== undefined && (isNaN(days as number) || (days as number) < 1)) {
+            return c.json({ error: 'Invalid days value' }, 400);
+        }
+
+        const result = await getProjectActivity(storage, projectId, {
+            bucket,
+            ...(from !== undefined && { from }),
+            ...(to !== undefined && { to }),
+            ...(days !== undefined && { days }),
+            source: c.req.query('source') ?? undefined,
         });
 
         if (!result.ok) return c.json({ error: result.message }, status(result.code));

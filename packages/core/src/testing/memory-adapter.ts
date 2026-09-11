@@ -1,5 +1,17 @@
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit } from '../storage';
+import type {
+    StorageAdapter,
+    NodeRow,
+    NodeInsertRow,
+    ApiKeyRow,
+    ProjectRow,
+    ContextFilters,
+    SearchFilters,
+    SearchHit,
+    ActivityQuery,
+    ActivityRow,
+} from '../storage';
 import { searchableText } from '../ops/search';
+import { aggregateActivity } from '../ops/analytics';
 
 // -- In-memory storage adapter ------------------------------------------------
 
@@ -65,7 +77,7 @@ export class MemoryStorage implements StorageAdapter {
                 type: row.type,
                 content: row.content ?? {},
                 metadata: row.metadata ?? {},
-                created_at: new Date().toISOString(),
+                created_at: row.created_at ?? new Date().toISOString(),
                 parent_id: row.parent_id ?? null,
                 prev_id: row.prev_id ?? null,
                 context_id: row.context_id ?? null,
@@ -141,6 +153,13 @@ export class MemoryStorage implements StorageAdapter {
         // ascending rank (bm25 convention), newest first on ties
         hits.sort((a, b) => a.rank - b.rank || String(b.created_at).localeCompare(String(a.created_at)));
         return hits.slice(0, limit);
+    }
+
+    async projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        return aggregateActivity(
+            this.nodes.filter((n) => n.project_id === projectId),
+            query,
+        );
     }
 
     async findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null> {

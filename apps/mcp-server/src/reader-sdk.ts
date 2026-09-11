@@ -9,6 +9,8 @@ export function sdkReader(uc: UltraContext): ContextReader {
 
     listContexts: (input) => uc.get(input),
 
+    activity: (input) => uc.stats(input),
+
     getMessages: async (id) => {
       try {
         const res = await uc.get(id);

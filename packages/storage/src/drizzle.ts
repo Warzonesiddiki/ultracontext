@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { alias } from 'drizzle-orm/pg-core';
 
 import { nodes, api_keys, projects, type ApiDb } from './db';
@@ -172,6 +172,56 @@ export class DrizzleAdapter implements StorageAdapter {
             rank: Number(row.rank ?? 0),
         }));
     }
+
+    // -- activity / analytics -------------------------------------------------
+
+    // One GROUP BY over the nodes you already own. Buckets are computed in UTC
+    // (not the session timezone) so a self-hosted instance anywhere in the world
+    // reports the same day boundaries as the client that wrote the data.
+    async projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]> {
+        const unit = query.bucket === 'week' ? 'week' : query.bucket === 'month' ? 'month' : 'day';
+        const bucketExpr = sql`to_char(date_trunc(${unit}, ${nodes.created_at} AT TIME ZONE 'UTC'), 'YYYY-MM-DD')`;
+
+        const conditions = [eq(nodes.project_id, projectId)];
+        if (query.from) conditions.push(sql`${nodes.created_at} >= ${query.from}::timestamptz`);
+        if (query.to) conditions.push(sql`${nodes.created_at} < ${query.to}::timestamptz`);
+        if (query.source) conditions.push(sql`${nodes.metadata}->>'source' = ${query.source}`);
+
+        const result = await this.db.execute(sql`
+            SELECT
+                ${bucketExpr}                                                              AS bucket_start,
+                COALESCE(NULLIF(${nodes.metadata}->>'source', ''), 'unknown')              AS source,
+                COUNT(*)                                                                   AS node_count,
+                COUNT(*) FILTER (WHERE ${nodes.type} <> 'context')                         AS message_count,
+                COUNT(*) FILTER (WHERE ${nodes.type} = 'context')                          AS context_count,
+                COUNT(*) FILTER (WHERE ${nodes.type} = 'context' AND ${nodes.context_id} IS NULL) AS root_context_count,
+                to_char(MIN(${nodes.created_at}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS first_event_at,
+                to_char(MAX(${nodes.created_at}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_event_at
+            FROM ${nodes}
+            WHERE ${sql.join(conditions, sql` AND `)}
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+        `);
+
+        // postgres-js hands back a RowList (array-like); other drivers wrap rows
+        // in `{ rows }`. Support both so the adapter stays driver-agnostic.
+        const rows: Record<string, any>[] = Array.isArray(result)
+            ? (result as Record<string, any>[])
+            : ((result as { rows?: Record<string, any>[] }).rows ?? []);
+
+        return rows.map((row) => ({
+            bucket_start: String(row.bucket_start ?? ''),
+            source: String(row.source ?? 'unknown'),
+            node_count: Number(row.node_count ?? 0),
+            message_count: Number(row.message_count ?? 0),
+            context_count: Number(row.context_count ?? 0),
+            root_context_count: Number(row.root_context_count ?? 0),
+            first_event_at: String(row.first_event_at ?? ''),
+            last_event_at: String(row.last_event_at ?? ''),
+        }));
+    }
+
+    // -- api keys -------------------------------------------------------------
 
     async findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null> {
         const rows = await this.db

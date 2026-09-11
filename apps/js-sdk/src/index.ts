@@ -110,6 +110,49 @@ export type SearchResponse = {
     data: SearchHit[];
 };
 
+// -- activity / analytics -----------------------------------------------------
+
+export type ActivityInput = {
+    bucket?: 'day' | 'week' | 'month';
+    days?: number;
+    from?: string;
+    to?: string;
+    source?: string;
+};
+
+export type ActivityPoint = {
+    bucket_start: string;
+    nodes: number;
+    messages: number;
+    contexts: number;
+    root_contexts: number;
+    first_event_at: string | null;
+    last_event_at: string | null;
+    sources: string[];
+};
+
+export type ActivityStats = {
+    bucket: 'day' | 'week' | 'month';
+    from: string;
+    to: string;
+    totals: {
+        nodes: number;
+        messages: number;
+        contexts: number;
+        root_contexts: number;
+        sources: number;
+        active_buckets: number;
+    };
+    by_source: Array<{
+        source: string;
+        nodes: number;
+        messages: number;
+        contexts: number;
+        root_contexts: number;
+    }>;
+    series: ActivityPoint[];
+};
+
 export type DeleteInput = (string | number) | (string | number)[];
 
 // Unified delete input — either message ids (soft, versioned) OR {permanent: true} (hard, irreversible)
@@ -264,6 +307,21 @@ export class UltraContext {
         if (input.before) params.set('before', input.before);
 
         return this.request<SearchResponse>(`/contexts/search?${params.toString()}`, { method: 'GET' });
+    }
+
+    // Usage analytics — free, unmetered, computed from your own database.
+    // The commercial tier charges for analytics and caps history on paid plans;
+    // nothing here is gated and no retention window truncates your history.
+    async stats(input: ActivityInput = {}): Promise<ActivityStats> {
+        const params = new URLSearchParams();
+        if (input.bucket) params.set('bucket', input.bucket);
+        if (input.days !== undefined) params.set('days', String(input.days));
+        if (input.from) params.set('from', input.from);
+        if (input.to) params.set('to', input.to);
+        if (input.source) params.set('source', input.source);
+
+        const query = params.toString();
+        return this.request<ActivityStats>(`/contexts/stats${query ? `?${query}` : ''}`, { method: 'GET' });
     }
 
     async deleteMany(ids: string[]): Promise<DeleteManyResponse> {

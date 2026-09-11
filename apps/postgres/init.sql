@@ -117,3 +117,61 @@ GROUP BY
   project_name,
   DATE_TRUNC('week', activity_day),
   source;
+
+-- Free, self-hosted analytics rollup. Called by the Supabase adapter via RPC;
+-- the Postgres/Drizzle adapter issues the equivalent inline. Buckets are UTC so
+-- a self-hosted instance anywhere reports the same day boundaries as the client
+-- that wrote the data, and weeks start on Monday everywhere.
+CREATE OR REPLACE FUNCTION ultracontext_activity(
+    p_project_id BIGINT,
+    p_from TIMESTAMPTZ DEFAULT NULL,
+    p_to TIMESTAMPTZ DEFAULT NULL,
+    p_bucket TEXT DEFAULT 'day',
+    p_source TEXT DEFAULT NULL
+)
+RETURNS TABLE (
+    bucket_start TEXT,
+    source TEXT,
+    node_count BIGINT,
+    message_count BIGINT,
+    context_count BIGINT,
+    root_context_count BIGINT,
+    first_event_at TEXT,
+    last_event_at TEXT
+)
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public
+AS $$
+    WITH scoped AS (
+        SELECT
+            n.created_at,
+            n.type,
+            n.context_id,
+            COALESCE(NULLIF(n.metadata->>'source', ''), 'unknown') AS source
+        FROM nodes n
+        WHERE n.project_id = p_project_id
+          AND (p_from IS NULL OR n.created_at >= p_from)
+          AND (p_to   IS NULL OR n.created_at <  p_to)
+          AND (p_source IS NULL OR COALESCE(NULLIF(n.metadata->>'source', ''), 'unknown') = p_source)
+    )
+    SELECT
+        to_char(
+            date_trunc(
+                CASE WHEN p_bucket IN ('week', 'month') THEN p_bucket ELSE 'day' END,
+                created_at AT TIME ZONE 'UTC'
+            ),
+            'YYYY-MM-DD'
+        ) AS bucket_start,
+        source,
+        COUNT(*) AS node_count,
+        COUNT(*) FILTER (WHERE type <> 'context') AS message_count,
+        COUNT(*) FILTER (WHERE type = 'context') AS context_count,
+        COUNT(*) FILTER (WHERE type = 'context' AND context_id IS NULL) AS root_context_count,
+        to_char(MIN(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS first_event_at,
+        to_char(MAX(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_event_at
+    FROM scoped
+    GROUP BY 1, 2
+    ORDER BY 1, 2;
+$$;

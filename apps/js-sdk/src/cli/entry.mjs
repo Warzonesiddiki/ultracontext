@@ -42,6 +42,7 @@ Commands:
   config        Run the setup wizard
   switch        Switch session to another agent (codex, claude)
   update        Update CLI globally via npm/pnpm/bun
+  stats         Usage analytics for everything you captured (free, unmetered)
   version       Print version
   help          Show this help message
 
@@ -63,7 +64,7 @@ Options:
 }
 
 // commands that need an API key
-const NEEDS_KEY = new Set(["", "sync"]);
+const NEEDS_KEY = new Set(["", "sync", "stats"]);
 // `serve` runs its own local server and never needs a hosted API key
 
 // interactive onboarding wizard (Ink-based), returns { launchTui }
@@ -468,6 +469,12 @@ async function run() {
     case "upgrade":
       await runUpdate(process.argv.slice(3));
       break;
+
+    case "stats": {
+      const { runStats } = await import("./stats.mjs");
+      await runStats(process.argv.slice(3));
+      break;
+    }
 
     case "switch": {
       const { runSwitch } = await import("./switch.mjs");

@@ -110,6 +110,48 @@ export function createMcpServer(reader: ContextReader) {
     },
   );
 
+  // free usage analytics — how much context have I captured, and from where?
+  mcp.registerTool(
+    "get_activity_stats",
+    {
+      title: "Get Activity Stats",
+      description:
+        "Usage analytics for your captured context: totals, per-source breakdown and a time series bucketed by day, week or month. Computed from your own database — free, unmetered, and never truncated by a retention window.",
+      inputSchema: {
+        bucket: z.enum(["day", "week", "month"]).optional().describe("Time granularity (default day)"),
+        days: z.number().optional().describe("Width of the default window (default 30 for day, 12 for week/month)"),
+        from: z.string().optional().describe("ISO8601 lower bound"),
+        to: z.string().optional().describe("ISO8601 upper bound (exclusive)"),
+        source: z.string().optional().describe("Restrict to one agent source (claude, codex, …)"),
+      },
+    },
+    async (args) => {
+      const res = await reader.activity({
+        bucket: args.bucket,
+        days: args.days,
+        from: args.from,
+        to: args.to,
+        source: args.source,
+      });
+
+      const summary = {
+        bucket: res.bucket,
+        window: { from: res.from, to: res.to },
+        totals: res.totals,
+        by_source: res.by_source,
+        series: res.series.map((p) => ({
+          bucket_start: p.bucket_start,
+          messages: p.messages,
+          contexts: p.contexts,
+          sessions: p.root_contexts,
+          sources: p.sources,
+        })),
+      };
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }] };
+    },
+  );
+
   // convenience: get recent activity from an agent
   mcp.registerTool(
     "get_recent_activity",

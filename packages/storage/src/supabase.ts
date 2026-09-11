@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, TransactionOptions } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions } from '@ultracontext/core';
 
 // =============================================================================
 // SUPABASE ADAPTER — same interface via Supabase REST client
@@ -160,6 +160,64 @@ export class SupabaseAdapter implements StorageAdapter {
     }
 
     // -- api keys -------------------------------------------------------------
+
+    // PostgREST has no tsvector ranking over jsonb without an RPC, so this falls
+    // back to a case-insensitive match and orders by recency. Callers that need
+    // ranked full-text search should use Postgres (DrizzleAdapter) or SQLite.
+    async searchMessages(projectId: number, query: string, filters: SearchFilters, limit: number): Promise<SearchHit[]> {
+        const needle = `%${query.replace(/[%,]/g, '')}%`;
+
+        let rows: Array<Record<string, any>> = [];
+        try {
+            let request = this.client
+                .from('nodes')
+                .select('public_id, context_id, content, metadata, created_at')
+                .eq('project_id', projectId)
+                .neq('type', 'context')
+                .or(`content->>message.ilike.${needle},content->>text.ilike.${needle}`);
+
+            if (filters.source) request = request.eq('metadata->>source', filters.source);
+            if (filters.user_id) request = request.eq('metadata->>user_id', filters.user_id);
+            if (filters.host) request = request.eq('metadata->>host', filters.host);
+            if (filters.session_id) request = request.eq('metadata->>session_id', filters.session_id);
+            if (filters.project_path) request = request.eq('metadata->>project_path', filters.project_path);
+            if (filters.after) request = request.gt('created_at', filters.after);
+            if (filters.before) request = request.lt('created_at', filters.before);
+
+            const { data, error } = await request
+                .order('created_at', { ascending: false })
+                .limit(limit);
+            if (error) throw error;
+            rows = (data ?? []) as Array<Record<string, any>>;
+        } catch (error) {
+            // PostgREST rejects the ->  operator on some deployments; surface as empty,
+            // never as a 500 — search is a convenience, not a critical path.
+            console.error(`searchMessages failed: ${error instanceof Error ? error.message : String(error)}`);
+            return [];
+        }
+
+        // resolve root context ids for the matched branch heads
+        const branchIds = [...new Set(rows.map((r) => r.context_id).filter(Boolean))];
+        const rootByBranch = new Map<string, string>();
+        if (branchIds.length > 0) {
+            const { data: heads } = await this.client
+                .from('nodes')
+                .select('public_id, context_id')
+                .in('public_id', branchIds)
+                .eq('type', 'context');
+            for (const head of heads ?? []) rootByBranch.set(head.public_id, head.context_id);
+        }
+
+        return rows.map((row) => ({
+            context_id: String(rootByBranch.get(row.context_id) ?? row.context_id ?? ''),
+            branch_id: String(row.context_id ?? ''),
+            message_id: String(row.public_id),
+            content: String(row.content?.message ?? row.content?.text ?? ''),
+            metadata: (row.metadata ?? {}) as Record<string, unknown>,
+            created_at: String(row.created_at ?? ''),
+            rank: 0,
+        }));
+    }
 
     async findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null> {
         const { data, error } = await this.client

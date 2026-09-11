@@ -82,6 +82,34 @@ export type UpdateResponse<T = unknown> = {
     version: number;
 };
 
+export type SearchInput = {
+    query: string;
+    limit?: number;
+    source?: string;
+    user_id?: string;
+    host?: string;
+    project_path?: string;
+    session_id?: string;
+    after?: string;
+    before?: string;
+};
+
+export type SearchHit = {
+    context_id: string;
+    branch_id: string;
+    message_id: string;
+    content: string;
+    metadata: Record<string, unknown>;
+    created_at: string;
+    rank: number;
+};
+
+export type SearchResponse = {
+    query: string;
+    limit: number;
+    data: SearchHit[];
+};
+
 export type DeleteInput = (string | number) | (string | number)[];
 
 // Unified delete input — either message ids (soft, versioned) OR {permanent: true} (hard, irreversible)
@@ -219,6 +247,23 @@ export class UltraContext {
             method: 'DELETE',
             body: { ids: input as DeleteInput, metadata: options?.metadata },
         });
+    }
+
+    // Full-text search across all captured context. Free and unmetered —
+    // there is no query quota and no paywall.
+    async search(input: SearchInput): Promise<SearchResponse> {
+        const params = new URLSearchParams();
+        params.set('q', input.query);
+        if (input.limit !== undefined) params.set('limit', String(input.limit));
+        if (input.source) params.set('source', input.source);
+        if (input.user_id) params.set('user_id', input.user_id);
+        if (input.host) params.set('host', input.host);
+        if (input.project_path) params.set('project_path', input.project_path);
+        if (input.session_id) params.set('session_id', input.session_id);
+        if (input.after) params.set('after', input.after);
+        if (input.before) params.set('before', input.before);
+
+        return this.request<SearchResponse>(`/contexts/search?${params.toString()}`, { method: 'GET' });
     }
 
     async deleteMany(ids: string[]): Promise<DeleteManyResponse> {

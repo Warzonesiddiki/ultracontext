@@ -98,22 +98,22 @@
 <header>
   <div class="title">
     <h1>UltraContext — Remediation Taskboard</h1>
-    <span class="sub">48 findings from the engineering audit · commit <code>736b471</code> · 2026-09-11</span>
+    <span class="sub">56 findings — 48 from the engineering audit + 8 README promise gaps · commit <code>736b471</code> · 2026-09-11</span>
   </div>
   <div class="meta">
     Companion to <b>AUDIT.md</b> (full analysis) and <b>TASKS.md</b> (markdown board).
     Click a card for detail. Progress is saved in this browser.
   </div>
   <div class="bar"><i id="fill"></i></div>
-  <div class="barlbl" id="prog">0 / 48 complete</div>
+  <div class="barlbl" id="prog">0 / 56 complete</div>
 </header>
 
 <div class="controls">
   <div class="grp"><span>Severity</span>
     <button data-f="sev" data-v="P0" class="on">P0 · 5</button>
-    <button data-f="sev" data-v="P1" class="on">P1 · 15</button>
-    <button data-f="sev" data-v="P2" class="on">P2 · 24</button>
-    <button data-f="sev" data-v="P3" class="on">P3 · 4</button>
+    <button data-f="sev" data-v="P1" class="on">P1 · 18</button>
+    <button data-f="sev" data-v="P2" class="on">P2 · 28</button>
+    <button data-f="sev" data-v="P3" class="on">P3 · 5</button>
   </div>
   <div class="grp"><span>Effort</span>
     <button data-f="eff" data-v="S" class="on">S ≤1h</button>
@@ -130,6 +130,7 @@
     <button data-f="area" data-v="SDK" class="on">SDK</button>
     <button data-f="area" data-v="Arch" class="on">Arch</button>
     <button data-f="area" data-v="Docs" class="on">Docs</button>
+    <button data-f="area" data-v="Promise" class="on">Promise</button>
   </div>
   <input type="search" id="q" placeholder="Search…">
   <button class="reset" id="hide">Hide completed</button>
@@ -346,6 +347,40 @@ const T = [
  file:"new",
  d:"No benchmarks exist for the append/read path — needed to validate the API-004 delta-storage work.",
  acc:"A reproducible benchmark for append, get, and update at realistic context sizes."}
+/* ── README PROMISE GAPS ─────────────────────────────────────────── */
+{id:"PROM-001",sev:"P1",ph:2,eff:"S",area:"Promise",t:"Expose created_at on MessageView + daemon metadata",
+ file:"packages/core/src/ops/get-context.ts:113 · apps/sync/src/daemon.mjs:814",
+ d:"MessageView maps {...content, id, index, metadata} — created_at is dropped, so clients cannot see when a message was created and cannot discover timestamps for ?before=. Daemon metadata carries no wall-clock time either. Time-travel works server-side but is unusable from the SDK.",
+ acc:"created_at is on every message in the response and in daemon metadata; ?before= is discoverable from the client."},
+{id:"PROM-002",sev:"P1",ph:2,eff:"L",area:"Promise",t:"Version on append — snapshots, then the git model",
+ file:"packages/core/src/ops/append-messages.ts · context-chain.ts",
+ d:"README: 'Every change creates a new version'. It doesn't — append adds no head, and the daemon ONLY appends, so every captured session has exactly one version. Verified: append x3 stays at v0; ?version=1 returns 'Version not found'; ?history=true returns [create]. Time-travel and rollback are inert for the primary use case. Short term: snapshot every N messages / T seconds. Long term: heads point at immutable chains so append = new head with zero copies (also fixes API-004's O(n) per edit).",
+ acc:"A captured session has multiple versions; ?version=N and ?history=true are meaningful for it."},
+{id:"PROM-003",sev:"P1",ph:2,eff:"M",area:"Promise",t:"Document ultracontext switch + support Linux/Windows",
+ file:"apps/js-sdk/src/cli/switch.mjs · README.md · apps/docs/",
+ d:"The headline example ('Codex, grab the last plan Claude Code made') is implemented as `ultracontext switch` — but grep finds ZERO mentions in README.md or apps/docs/. openInNewTab() returns false unless platform is darwin, so it is macOS-only, and it supports just codex <-> claude of the six ingested sources. Your best demo is invisible.",
+ acc:"switch appears in the README and docs site; it launches a terminal on Linux and Windows; a --dry-run shows what carries over."},
+{id:"PROM-004",sev:"P2",ph:3,eff:"M",area:"Promise",t:"Team setup guide + per-member identity",
+ file:"apps/js-sdk/src/cli/onboarding.mjs · apps/docs/ · apps/mcp-server/src/server.ts",
+ d:"'What is Alex working on in Codex right now?' is achievable today — the daemon tags user_id and host, and listContexts filters on both — but only if the team shares one API key and everyone sets DAEMON_USER_ID. There is no guide, no identity prompt (it defaults to $USER), and no team-oriented MCP tool.",
+ acc:"`ultracontext config` asks what to call you; a team-setup guide exists; MCP exposes list_teammates."},
+{id:"PROM-005",sev:"P2",ph:1,eff:"S",area:"Promise",t:"README accuracy pass",
+ file:"README.md",
+ d:"Under-claims: you ingest SIX sources (codex, claude, openclaw, cursor, gemini, gstack) but the README says three — Cursor and Gemini are differentiators nobody else has. Omits local-first/SQLite entirely (grep for sqlite|local-first|offline|self-host returns nothing), despite it being the most recent flagship commit. Typo on line 50: 'what's happeming'. Node floor is >=22.12.0, not >=22.",
+ acc:"README describes six sources, has a local-first section, no typo, and the correct Node floor."},
+{id:"PROM-006",sev:"P2",ph:4,eff:"L",area:"Promise",t:"Local-first end to end",
+ file:"apps/sync/ · apps/mcp-server/ · packages/storage/src/sqlite/",
+ d:"The SQLite adapter exists and @ultracontext/core runs with no server, but the daemon and MCP server still require the hosted API. For a tool reading developers' agent transcripts, 'runs entirely on your machine' is the strongest trust and adoption lever — and it is absent from the README.",
+ acc:"The daemon and MCP server run fully against local SQLite with zero network calls."},
+{id:"PROM-007",sev:"P2",ph:4,eff:"L",area:"Promise",t:"ultracontext ask + semantic search",
+ file:"apps/js-sdk/src/cli/ (new) · apps/api/",
+ d:"The README says 'Ask questions' and calls the product 'a personal context engineer' — but today that requires wiring up an MCP client and knowing a context id. 'Grab the last plan Claude Code made' should not need a session id. Embed message chunks and retrieve by meaning.",
+ acc:"`ultracontext ask \"what was I doing before the refactor?\"` answers from your own captured context."},
+{id:"PROM-008",sev:"P3",ph:4,eff:"M",area:"Promise",t:"ultracontext diff + auto-compaction",
+ file:"apps/js-sdk/src/cli/ (new) · packages/core/",
+ d:"True git-like ergonomics: diff two contexts or two versions. Pair with auto-summarisation of long contexts, which solves the real problem the fork guide describes ('the conversation gets too long, it starts forgetting').",
+ acc:"diff renders a readable delta; long contexts roll old messages into a summary node on a new version."},
+
 ];
 
 const PHASES = {
@@ -358,7 +393,7 @@ const PHASES = {
 const KEY = "uc-taskboard-v1";
 let done = new Set(JSON.parse(localStorage.getItem(KEY) || "[]"));
 const filters = {sev:new Set(["P0","P1","P2","P3"]), eff:new Set(["S","M","L"]),
-                area:new Set(["Security","Data","API","Build","Tests","CI/DX","SDK","Arch","Docs"])};
+                area:new Set(["Security","Data","API","Build","Tests","CI/DX","SDK","Arch","Docs","Promise"])};
 let query = "", hideDone = false;
 const save = () => localStorage.setItem(KEY, JSON.stringify([...done]));
 const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));

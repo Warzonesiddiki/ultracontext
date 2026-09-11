@@ -9,6 +9,7 @@ import {
     listContexts,
     resultStatus,
     updateMessages,
+    searchMessages,
     type ContextFilters,
     type ErrorCode,
 } from '@ultracontext/core';
@@ -64,6 +65,33 @@ export function registerContextRoutes(app: HttpApp) {
 
         const data = await listContexts(storage, projectId, filters);
         return c.json(data);
+    });
+
+    // -- full-text search (must be registered before :id routes) ----------------
+
+    // Search is free and unmetered — UltraContext has no query quota and no paywall.
+    app.get('/contexts/search', async (c) => {
+        const { projectId } = c.get('auth');
+        const storage = c.get('storage');
+        const query = c.req.query('q') ?? '';
+
+        const limitRaw = c.req.query('limit');
+        const limit = limitRaw === undefined ? undefined : parseInt(limitRaw);
+
+        const result = await searchMessages(storage, projectId, {
+            query,
+            ...(limit !== undefined && { limit }),
+            source: c.req.query('source') ?? undefined,
+            user_id: c.req.query('user_id') ?? undefined,
+            host: c.req.query('host') ?? undefined,
+            project_path: c.req.query('project_path') ?? undefined,
+            session_id: c.req.query('session_id') ?? undefined,
+            after: c.req.query('after') ?? undefined,
+            before: c.req.query('before') ?? undefined,
+        });
+
+        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        return c.json(result.data);
     });
 
     // -- delete-many contexts (must be registered before :id routes) -----------

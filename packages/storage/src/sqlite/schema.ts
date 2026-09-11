@@ -70,4 +70,15 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_context_id ON nodes(context_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_project_type ON nodes(project_id, type);
+
+-- Full-text search index over message nodes (not version heads).
+-- Search is a free, first-class capability — there is no quota and no paywall.
+-- UNINDEXED columns are stored but not tokenised: they are only used for filtering.
+CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+    public_id UNINDEXED,
+    project_id UNINDEXED,
+    context_id UNINDEXED,
+    body,
+    tokenize = 'porter unicode61'
+);
 `;

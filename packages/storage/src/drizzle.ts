@@ -1,6 +1,8 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, TransactionOptions } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions } from '@ultracontext/core';
+import { alias } from 'drizzle-orm/pg-core';
+
 import { nodes, api_keys, projects, type ApiDb } from './db';
 
 // =============================================================================
@@ -119,6 +121,57 @@ export class DrizzleAdapter implements StorageAdapter {
     }
 
     // -- api keys -------------------------------------------------------------
+
+    async searchMessages(projectId: number, query: string, filters: SearchFilters, limit: number): Promise<SearchHit[]> {
+        const heads = alias(nodes, 'heads');
+
+        // plainto_tsquery accepts arbitrary user input without throwing on
+        // tsquery syntax errors — tsquery operator injection is not possible.
+        const doc = sql`to_tsvector('english', COALESCE(${nodes.content}->>'message', ${nodes.content}::text))`;
+        const q = sql`plainto_tsquery('english', ${query})`;
+        const rankExpr = sql<number>`-ts_rank(${doc}, ${q})`;
+
+        const conditions = [
+            eq(nodes.project_id, projectId),
+            ne(nodes.type, 'context'),
+            sql`${doc} @@ ${q}`,
+        ];
+
+        if (filters.source) conditions.push(sql`${nodes.metadata} @> ${JSON.stringify({ source: filters.source })}::jsonb`);
+        if (filters.user_id) conditions.push(sql`${nodes.metadata} @> ${JSON.stringify({ user_id: filters.user_id })}::jsonb`);
+        if (filters.host) conditions.push(sql`${nodes.metadata} @> ${JSON.stringify({ host: filters.host })}::jsonb`);
+        if (filters.session_id) conditions.push(sql`${nodes.metadata} @> ${JSON.stringify({ session_id: filters.session_id })}::jsonb`);
+        if (filters.project_path) conditions.push(sql`${nodes.metadata} @> ${JSON.stringify({ project_path: filters.project_path })}::jsonb`);
+        if (filters.after) conditions.push(gt(nodes.created_at, filters.after));
+        if (filters.before) conditions.push(lt(nodes.created_at, filters.before));
+
+        // ts_rank is higher-is-better; negated so ascending order (bm25 convention) applies.
+        const rows = await this.db
+            .select({
+                message_id: nodes.public_id,
+                context_id: sql<string>`COALESCE(${heads.context_id}, ${nodes.context_id})`,
+                branch_id: nodes.context_id,
+                content: nodes.content,
+                metadata: nodes.metadata,
+                created_at: nodes.created_at,
+                rank: rankExpr,
+            })
+            .from(nodes)
+            .leftJoin(heads, and(eq(heads.public_id, nodes.context_id), eq(heads.type, 'context')))
+            .where(and(...conditions))
+            .orderBy(rankExpr)
+            .limit(limit);
+
+        return rows.map((row) => ({
+            context_id: String(row.context_id ?? ''),
+            branch_id: String(row.branch_id ?? ''),
+            message_id: String(row.message_id),
+            content: String((row.content as Record<string, unknown>)?.message ?? ''),
+            metadata: (row.metadata ?? {}) as Record<string, unknown>,
+            created_at: String(row.created_at ?? ''),
+            rank: Number(row.rank ?? 0),
+        }));
+    }
 
     async findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null> {
         const rows = await this.db

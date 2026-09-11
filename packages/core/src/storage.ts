@@ -50,6 +50,31 @@ export type ContextFilters = {
     before?: string;
 };
 
+// -- Full-text search ---------------------------------------------------------
+
+export type SearchFilters = {
+    source?: string;
+    user_id?: string;
+    host?: string;
+    project_path?: string;
+    session_id?: string;
+    after?: string;
+    before?: string;
+};
+
+// A single search hit. `context_id` is the ROOT context the message belongs to
+// (what a caller passes to GET /contexts/:id); `branch_id` is the version head
+// the message actually lives under. They differ once a context has been edited.
+export type SearchHit = {
+    context_id: string;
+    branch_id: string;
+    message_id: string;
+    content: string;
+    metadata: Record<string, unknown>;
+    created_at: string;
+    rank: number;
+};
+
 // -- Storage adapter interface ------------------------------------------------
 
 export interface StorageAdapter {
@@ -69,6 +94,11 @@ export interface StorageAdapter {
     clearParentReferences(projectId: number, parentId: string): Promise<void>;
     // batch-clear parent_id for all nodes whose parent_id is any of parentIds (single query)
     clearParentReferencesBulk(projectId: number, parentIds: string[]): Promise<void>;
+
+    // full-text search — ranked matches across a project's message nodes.
+    // Adapters use the best mechanism available (FTS5 / tsvector / ILIKE) and
+    // MUST return [] for an empty query rather than throwing.
+    searchMessages(projectId: number, query: string, filters: SearchFilters, limit: number): Promise<SearchHit[]>;
 
     // api keys
     findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null>;

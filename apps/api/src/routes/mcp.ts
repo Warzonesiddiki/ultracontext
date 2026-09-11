@@ -1,6 +1,6 @@
 import { handleMcpRequest } from 'ultracontext-mcp-server/handler';
 import type { ContextReader } from 'ultracontext-mcp-server/types';
-import { listContexts, getContextMessages } from '@ultracontext/core';
+import { listContexts, getContextMessages, searchMessages } from '@ultracontext/core';
 import type { HttpApp, HttpContext } from '../types/http';
 
 // -- storage-backed reader (no HTTP loopback) ---------------------------------
@@ -10,6 +10,10 @@ function storageReader(c: HttpContext): ContextReader {
     const storage = c.get('storage');
 
     return {
+        search: (input) => searchMessages(storage, projectId, input).then((result) => {
+            if (!result.ok) return { query: input.query, limit: 0, data: [] };
+            return result.data;
+        }),
         listContexts: (input) => listContexts(storage, projectId, input),
         getMessages: (id) => getContextMessages(storage, projectId, id),
     };

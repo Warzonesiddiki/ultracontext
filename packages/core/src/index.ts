@@ -11,6 +11,8 @@ export type {
     ApiKeyRow,
     ProjectRow,
     ContextFilters,
+    SearchFilters,
+    SearchHit,
     TransactionOptions,
 } from './storage';
 
@@ -34,6 +36,10 @@ export type { NodeInsertInput, VersionInfo } from './context-chain';
 
 export { listContexts } from './ops/list-contexts';
 export { getContextMessages } from './ops/get-context-messages';
+
+export { searchMessages, searchableText, snippet } from './ops/search';
+export type { SearchInput, SearchResultData } from './ops/search';
+export { DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_LEN } from './ops/search';
 
 export { createContext } from './ops/create-context';
 export type { CreateContextInput } from './ops/create-context';

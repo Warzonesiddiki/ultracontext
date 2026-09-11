@@ -5,6 +5,8 @@ import type { ContextReader } from "./types.js";
 
 export function sdkReader(uc: UltraContext): ContextReader {
   return {
+    search: (input) => uc.search(input),
+
     listContexts: (input) => uc.get(input),
 
     getMessages: async (id) => {

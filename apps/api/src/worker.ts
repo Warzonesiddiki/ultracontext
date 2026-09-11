@@ -1,4 +1,5 @@
 import { KvKeyCache } from './cache/kv';
+import { KvRateLimiter } from './rate-limit/kv';
 import { buildApiConfig } from './config';
 import { createApp } from './app';
 import { SupabaseAdapter } from '@ultracontext/storage/supabase';
@@ -13,6 +14,7 @@ type Env = {
     SUPABASE_SERVICE_ROLE_KEY: string;
     ULTRACONTEXT_ADMIN_KEY: string;
     ULTRACONTEXT_API_KEYS_CACHE?: KVNamespace;
+    ULTRACONTEXT_RATE_LIMIT_KV?: KVNamespace;
 };
 
 // cached per worker instance
@@ -31,7 +33,11 @@ export default {
                 ? new KvKeyCache(env.ULTRACONTEXT_API_KEYS_CACHE)
                 : undefined;
 
-            app = createApp({ config, storage, keyCache });
+            const rateLimiter = env.ULTRACONTEXT_RATE_LIMIT_KV
+                ? new KvRateLimiter(env.ULTRACONTEXT_RATE_LIMIT_KV)
+                : undefined;
+
+            app = createApp({ config, storage, keyCache, rateLimiter });
         }
 
         return app.fetch(request);

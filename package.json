@@ -14,6 +14,7 @@
     "ultracontext:key:local": "bash ./apps/api/scripts/ultracontext-dev-key.sh",
     "ultracontext:migrate": "pnpm run ultracontext:db:migrate",
     "ultracontext:sync": "pnpm --filter @ultracontext/sync run start",
-    "ultracontext:stop": "pnpm --filter @ultracontext/sync run stop"
+    "ultracontext:stop": "pnpm --filter @ultracontext/sync run stop",
+    "ultracontext:serve": "pnpm --filter ultracontext-api run serve"
   }
 }

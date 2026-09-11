@@ -35,6 +35,7 @@ Usage: ultracontext [command] [options]
 Commands:
   (none)        Start sync (daemon + TUI)
   sync          Start sync (daemon + TUI)
+  serve         Run the context server locally (SQLite, free, no account)
   sync start    Start daemon in background (no TUI)
   sync stop     Stop a running daemon
   sync status   Show daemon status
@@ -63,6 +64,7 @@ Options:
 
 // commands that need an API key
 const NEEDS_KEY = new Set(["", "sync"]);
+// `serve` runs its own local server and never needs a hosted API key
 
 // interactive onboarding wizard (Ink-based), returns { launchTui }
 async function runOnboarding() {
@@ -441,6 +443,12 @@ async function run() {
       process.argv[2] = "stop";
       await runCtlSDK();
       break;
+
+    case "serve": {
+      const { runServe } = await import("./serve.mjs");
+      await runServe(process.argv.slice(3));
+      break;
+    }
 
     case "config": {
       const configResult = await runOnboarding();

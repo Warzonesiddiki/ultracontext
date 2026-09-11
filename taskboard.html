@@ -98,21 +98,21 @@
 <header>
   <div class="title">
     <h1>UltraContext — Remediation Taskboard</h1>
-    <span class="sub">56 findings — 48 from the engineering audit + 8 README promise gaps · commit <code>736b471</code> · 2026-09-11</span>
+    <span class="sub">63 findings — 48 audit + 8 README promise gaps + 7 free-edition capabilities · commit <code>736b471</code> · 2026-09-11</span>
   </div>
   <div class="meta">
     Companion to <b>AUDIT.md</b> (full analysis) and <b>TASKS.md</b> (markdown board).
     Click a card for detail. Progress is saved in this browser.
   </div>
   <div class="bar"><i id="fill"></i></div>
-  <div class="barlbl" id="prog">0 / 56 complete</div>
+  <div class="barlbl" id="prog">0 / 63 complete</div>
 </header>
 
 <div class="controls">
   <div class="grp"><span>Severity</span>
-    <button data-f="sev" data-v="P0" class="on">P0 · 5</button>
-    <button data-f="sev" data-v="P1" class="on">P1 · 18</button>
-    <button data-f="sev" data-v="P2" class="on">P2 · 28</button>
+    <button data-f="sev" data-v="P0" class="on">P0 · 6</button>
+    <button data-f="sev" data-v="P1" class="on">P1 · 21</button>
+    <button data-f="sev" data-v="P2" class="on">P2 · 31</button>
     <button data-f="sev" data-v="P3" class="on">P3 · 5</button>
   </div>
   <div class="grp"><span>Effort</span>
@@ -380,6 +380,36 @@ const T = [
  file:"apps/js-sdk/src/cli/ (new) · packages/core/",
  d:"True git-like ergonomics: diff two contexts or two versions. Pair with auto-summarisation of long contexts, which solves the real problem the fork guide describes ('the conversation gets too long, it starts forgetting').",
  acc:"diff renders a readable delta; long contexts roll old messages into a summary node on a new version."},
+
+/* ── FREE EDITION — 100% free, self-hosted, better than commercial ───── */
+{id:"FREE-001",sev:"P0",ph:2,eff:"S",area:"Security",t:"Rate limiting (abuse protection, NOT a paywall) — SHIPPED",
+ file:"apps/api/src/rate-limit/ · apps/api/src/middleware/rate-limit.ts",
+ d:"DONE. There was no rate limiting at all — not even for abuse. Added MemoryRateLimiter (bounded fixed-window for Node) and KvRateLimiter (Workers), a Hono middleware emitting RateLimit-* and Retry-After, and generous defaults: 1000/min per key, 300/min per IP, 10/min on /v1/keys. Fails OPEN so a limiter bug can never cause an outage. The 429 body says explicitly that this is abuse protection and that UltraContext is free. Disable with RATE_LIMIT_DISABLED=1.",
+ acc:"429s on sustained abuse; RateLimit headers on every response; no usage metering anywhere."},
+{id:"FREE-002",sev:"P1",ph:2,eff:"L",area:"Promise",t:"Full-text search — SHIPPED",
+ file:"packages/core/src/ops/search.ts · packages/storage · apps/api · apps/mcp-server",
+ d:"DONE. The commercial version's headline feature ('agentic search'), now free and local. SQLite FTS5 with porter stemming, bm25 ranking and prefix/typeahead; Postgres tsvector + ts_rank; Supabase fallback; in-memory for tests. Surfaces: GET /contexts/search, MCP tool search_contexts, uc.search(). User input is escaped into FTS5 phrase queries so operators (NEAR, OR, -, \") can never change query semantics. Tenant-isolation tests included.",
+ acc:"`ultracontext serve` + search returns ranked hits across captured sessions, with no network call."},
+{id:"FREE-003",sev:"P1",ph:2,eff:"M",area:"Data",t:"SQLite as a first-class API backend — SHIPPED",
+ file:"packages/storage/src/index.ts · apps/api/src/config.ts",
+ d:"DONE. createStorageAdapter() now supports DATABASE_PROVIDER=sqlite and accepts plain paths, ~/.ultracontext/ultracontext.db, or file: URLs. The API runs with zero external services — no Postgres, no Supabase, no network.",
+ acc:"DATABASE_PROVIDER=sqlite starts the API against a local file."},
+{id:"FREE-004",sev:"P1",ph:2,eff:"M",area:"Promise",t:"Zero-config `ultracontext serve` — SHIPPED",
+ file:"apps/api/src/serve.ts · apps/js-sdk/src/cli/serve.mjs",
+ d:"DONE. One command runs the whole product locally: API + MCP + search + SQLite. On first run it generates an admin key and an API key, stores them at ~/.ultracontext/server.json with mode 0600 (dir 0700), and prints a ready-to-paste `claude mcp add` command. Restarts are idempotent — keys are reused. Also fixes SEC-004 in practice for the serve path.",
+ acc:"`ultracontext serve` works from a clean machine with no configuration."},
+{id:"FREE-005",sev:"P2",ph:3,eff:"M",area:"Promise",t:"Analytics — the activity views are built but unused",
+ file:"apps/postgres/init.sql (project_activity_daily / _weekly)",
+ d:"init.sql already defines project_activity_daily and project_activity_weekly views, but NOTHING in the codebase queries them. The commercial version charges for 'Analytics' / 'Unlimited analytics'. Wiring them to an endpoint and a CLI view is a cheap, high-visibility win.",
+ acc:"`ultracontext stats` and GET /v1/stats surface daily/weekly activity."},
+{id:"FREE-006",sev:"P2",ph:3,eff:"M",area:"Promise",t:"Backups and log retention",
+ file:"new CLI commands",
+ d:"The commercial Pro tier sells 'Backups + log retention' and Enterprise sells 'Custom retention'. Free and self-hosted should include both: `ultracontext backup` (snapshot the SQLite file safely, including WAL) and `ultracontext gc` (prune events older than a retention window).",
+ acc:"A scheduled backup and a retention policy run locally with no paid tier."},
+{id:"FREE-007",sev:"P2",ph:4,eff:"L",area:"Promise",t:"Local-first end to end for daemon + MCP",
+ file:"apps/sync/ · apps/mcp-server/",
+ d:"The daemon and MCP server still require the hosted API. Wire them to the local SQLite server started by `ultracontext serve`, so the entire product runs with zero network. This is the strongest trust lever for a tool that reads agent transcripts.",
+ acc:"`ultracontext serve` + `ultracontext sync` form a complete, offline context system."},
 
 ];
 

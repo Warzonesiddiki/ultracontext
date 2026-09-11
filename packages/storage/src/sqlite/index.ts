@@ -127,15 +127,6 @@ export class SqliteAdapter implements StorageAdapter {
         return rows[0] ?? null;
     }
 
-    async findRootContextByPublicId(publicId: string) {
-        const rows = await this.db
-            .select({ public_id: nodes.public_id })
-            .from(nodes)
-            .where(and(eq(nodes.public_id, publicId), eq(nodes.type, 'context'), isNull(nodes.context_id)))
-            .limit(1);
-        return rows[0] ?? null;
-    }
-
     async listRootContexts(projectId: number, limit: number, filters?: ContextFilters) {
         const conditions = [eq(nodes.project_id, projectId), eq(nodes.type, 'context'), isNull(nodes.context_id)];
 

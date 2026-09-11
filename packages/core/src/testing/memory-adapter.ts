@@ -53,11 +53,6 @@ export class MemoryStorage implements StorageAdapter {
         return n ? { public_id: n.public_id } : null;
     }
 
-    async findRootContextByPublicId(publicId: string) {
-        const n = this.nodes.find((n) => n.public_id === publicId && n.type === 'context' && n.context_id === null);
-        return n ? { public_id: n.public_id } : null;
-    }
-
     async listRootContexts(projectId: number, limit: number, _filters?: ContextFilters) {
         return this.nodes
             .filter((n) => n.project_id === projectId && n.type === 'context' && n.context_id === null)

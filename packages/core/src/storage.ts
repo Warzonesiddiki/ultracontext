@@ -119,8 +119,11 @@ export interface StorageAdapter {
     findContextBranches(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'prev_id' | 'created_at'>[]>;
     findVersions(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'created_at' | 'metadata'>[]>;
     findNonContextNodes(contextId: string): Promise<NodeRow[]>;
+    /**
+     * Resolve a ROOT context. MUST be project-scoped — an unscoped lookup here
+     * is a cross-tenant read (see SEC-001).
+     */
     findRootContext(projectId: number, publicId: string): Promise<Pick<NodeRow, 'public_id'> | null>;
-    findRootContextByPublicId(publicId: string): Promise<Pick<NodeRow, 'public_id'> | null>;
     listRootContexts(projectId: number, limit: number, filters?: ContextFilters): Promise<Pick<NodeRow, 'public_id' | 'metadata' | 'created_at'>[]>;
 
     // nodes — mutations

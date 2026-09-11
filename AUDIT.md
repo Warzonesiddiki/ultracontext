@@ -65,7 +65,7 @@ Worth naming, so the plan below doesn't read as a blanket criticism.
 
 ## 4. P0 — Critical
 
-### SEC-001 · Cross-tenant context read via unscoped fork lookup 🔴
+### SEC-001 · Cross-tenant context read via unscoped fork lookup 🔴 → **FIXED 2026-09-11**
 
 **Location:** `packages/core/src/ops/create-context.ts:82`
 **Also:** `packages/storage/src/{drizzle.ts:53, supabase.ts:73, sqlite/index.ts:68}`, `packages/core/src/testing/memory-adapter.ts:43`
@@ -88,6 +88,12 @@ Tenant B fork    : {"ok":true,"data":{"id":"ctx_dfd4c80e680ff2a559a1a03b", ...}}
 Tenant B reading : ["My AWS_SECRET is AKIAIOSFODNN7EXAMPLE"]
 
 CROSS-TENANT LEAK: CONFIRMED
+
+**Fix (shipped):** the lookup is now `findRootContext(projectId, from)`, and the
+unscoped `findRootContextByPublicId` has been deleted from the `StorageAdapter`
+interface and all four adapters. Five regression tests in
+`packages/core/src/ops/create-context.test.ts` cover the plain, `version`, `at`
+and `before` fork paths; reverting the fix makes all five fail.
 ```
 
 **Why it's not intentional:** see the analysis in §7 — forking is documented as a personal

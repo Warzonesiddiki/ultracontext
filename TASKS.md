@@ -52,10 +52,15 @@ severity, area, or effort and tick items off as you go (progress persists in `lo
 **File:** `packages/core/src/ops/create-context.ts:82`
 **Change:** `findRootContextByPublicId(from)` → `findRootContext(projectId, from)`
 (the project-scoped method already exists in all four adapters)
-- [ ] Swap the call
-- [ ] Add regression test: `createContext(storage, 2, { from: tenantAId })` → `not_found`
-- [ ] Add equivalent tests for `version` / `at` / `before` fork paths
-- [ ] Verify existing fork tests still pass (they use same-project ids, so they should)
+
+**Status: DONE** — 2026-09-11
+- [x] Swap the call
+- [x] Add regression test: `createContext(storage, 2, { from: tenantAId })` → `not_found`
+- [x] Add equivalent tests for `version` / `at` / `before` fork paths
+- [x] Verify existing fork tests still pass (they use same-project ids, so they should)
+
+The five new tests were verified to actually catch the bug: reverting the one-line
+fix makes all five fail.
 
 **Acceptance:** no adapter method can return a root context outside the caller's project.
 
@@ -221,9 +226,11 @@ while the workspace SDK is at **1.5.0**.
 ---
 
 ### 🟠 SEC-007 · Remove the unscoped adapter method · `S`
-- [ ] Once SEC-001 lands, delete `findRootContextByPublicId` from the `StorageAdapter`
+
+**Status: DONE** — 2026-09-11
+- [x] Once SEC-001 lands, delete `findRootContextByPublicId` from the `StorageAdapter`
       interface and all four adapters
-- [ ] Confirm no callers remain
+- [x] Confirm no callers remain
 
 **Acceptance:** the interface makes the SEC-001 class of bug unrepresentable.
 

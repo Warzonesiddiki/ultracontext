@@ -72,20 +72,6 @@ export class SupabaseAdapter implements StorageAdapter {
         return data;
     }
 
-    async findRootContextByPublicId(publicId: string) {
-        const { data, error } = await this.client
-            .from('nodes')
-            .select('public_id')
-            .eq('public_id', publicId)
-            .eq('type', 'context')
-            .is('context_id', null)
-            .limit(1)
-            .single();
-        if (error && error.code === 'PGRST116') return null;
-        if (error) throw error;
-        return data;
-    }
-
     async listRootContexts(projectId: number, limit: number, filters?: ContextFilters) {
         let query = this.client
             .from('nodes')

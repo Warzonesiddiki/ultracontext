@@ -149,10 +149,10 @@
 <script>
 const T = [
 /* ── PHASE 1 ─────────────────────────────────────────────────────── */
-{id:"SEC-001",sev:"P0",ph:1,eff:"S",area:"Security",t:"Scope fork source lookup to the project",
+{id:"SEC-001",sev:"P0",ph:1,eff:"S",area:"Security",t:"Scope fork source lookup to the project — FIXED",
  file:"packages/core/src/ops/create-context.ts:82",
- d:"createContext resolves the `from` fork target with findRootContextByPublicId(), the only StorageAdapter method with no projectId filter. Any tenant can fork another tenant's context and read its messages. Confirmed with a working PoC.",
- acc:"createContext(storage, 2, {from: tenantAId}) returns not_found. No adapter method can return a root context outside the caller's project."},
+ d:"FIXED. createContext resolved the `from` fork target with findRootContextByPublicId(), the only StorageAdapter method with no projectId filter — any tenant could fork another tenant's context and read its messages (confirmed with a PoC). Now uses findRootContext(projectId, from), which filters on project_id in the same query. findRootContextByPublicId has been DELETED from the interface and all four adapters (SEC-007, done in the same pass) so this class of bug is unrepresentable. Five regression tests cover the plain, version, at and before fork paths; reverting the one-line fix makes all five fail.",
+ acc:"createContext(storage, 2, {from: tenantAId}) returns not_found; the unscoped method no longer exists anywhere."},
 {id:"SEC-002",sev:"P0",ph:1,eff:"S",area:"Security",t:"Replace CORS wildcard with an origin allowlist",
  file:"apps/api/src/middleware/cors.ts:6-10",
  d:"Access-Control-Allow-Origin: * is sent alongside Access-Control-Allow-Headers: Authorization, so any website can drive the API with a bearer token. Paired with the lack of rate limiting, this is a ready-made abuse channel.",
@@ -219,9 +219,9 @@ const T = [
  file:"apps/api/src/routes/contexts.ts (append + patch)",
  d:"c.req.json() is called with no cap, so a single request can carry unbounded payloads.",
  acc:"Content-Length check plus a parse cap; 413 over the limit. Paired with MAX_MESSAGES_PER_APPEND."},
-{id:"SEC-007",sev:"P2",ph:2,eff:"S",area:"Security",t:"Remove findRootContextByPublicId from the adapter",
+{id:"SEC-007",sev:"P2",ph:2,eff:"S",area:"Security",t:"Remove findRootContextByPublicId from the adapter — DONE",
  file:"packages/core/src/storage.ts:62",
- d:"After SEC-001 is fixed, this unscoped method remains as a footgun inviting reintroduction of the same class of bug.",
+ d:"DONE. The unscoped method was a footgun inviting reintroduction of the SEC-001 class of bug. Deleted from the StorageAdapter interface and from all four adapters (drizzle, sqlite, supabase, memory); zero callers remain.",
  acc:"Deleted from the StorageAdapter interface and all four adapters; no callers remain."},
 
 /* ── PHASE 3 ─────────────────────────────────────────────────────── */

@@ -11,8 +11,8 @@ and local — all features, no paywall, no telemetry, no network dependency.
 **This thread shipped: universal harness coverage (FREE-008)**, then
 **FREE-006 (`ultracontext backup` + `ultracontext gc`)**, then
 **FREE-007 (local-first daemon + MCP — the offline loop)**, then
-**PROM-002 (version on append — the git model)** — see the notes below the
-table for FREE-006, FREE-007 and PROM-002.
+**PROM-002 (version on append — the git model)** and **SEC-002 (CORS
+allowlist)** — see the notes below the table.
 
 UltraContext now ingests **9** sources, up from 6:
 
@@ -168,6 +168,17 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   = version 2 (was 1). One API test assertion updated; 5 new core tests cover
   time-travel, zero-copy, chain linkage and update-then-append.
 
+### SEC-002 — CORS origin allowlist (shipped last in this thread)
+
+- `apps/api/src/middleware/cors.ts` no longer sends `Access-Control-Allow-Origin: *`.
+  Allowed origins: loopback (http/https on `localhost` / `127.0.0.1` / `::1`,
+  any port — zero-config local dashboards) + exact matches from
+  `ULTRACONTEXT_CORS_ORIGINS` (comma list; a bare `*` entry is ignored on
+  purpose). Anything else — and a missing Origin — gets NO ACAO header and no
+  CORS surface headers; preflights from blocked origins get 204 without ACAO.
+- `corsAllowed(origin, env)` is exported for reuse/tests; the middleware reads
+  `process.env` at request time (so the env var can change without a restart).
+
 ---
 ## 2. Test + typecheck baseline (current)
 
@@ -177,10 +188,10 @@ packages/storage      20 pass / 0 fail
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
 apps/js-sdk           48 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server)
 apps/sync             10 pass / 0 fail
-apps/api              38 pass / 0 fail   (1 assertion updated: delete after append => version 2)
+apps/api              49 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests)
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 ────────────────────────────────────
-total                415 pass / 0 fail
+total                426 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -206,7 +217,7 @@ appending one freebuff message appended **1** (incremental).
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
-- **SEC-002** (CORS), **CI-001** (no CI), **DATA-004/DATA-001**.
+- **CI-001** (no CI), **DATA-004/DATA-001**, **PROM-003** (switch docs + Linux/Windows).
 - **More harnesses** — the user said "all harness use to use ai". Candidates not
   yet covered: Amp, Cline, Roo Code, Kilo Code, Windsurf, Zed, Aider, Goose,
   Crush, Droid/Factory, Continue, pi. Recipe below; **verify paths first**.

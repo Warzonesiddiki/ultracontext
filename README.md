@@ -133,6 +133,11 @@ local `server.json` → the hosted `config.json` (from `ultracontext config`).
 Set `ULTRACONTEXT_LOCAL=1` to force local mode. Your agents' transcripts never
 leave the machine.
 
+CORS is locked to loopback origins by default (`localhost` / `127.0.0.1` /
+`::1`, any port) so local dashboards work while external websites get no
+`Access-Control-Allow-Origin` header at all. Add origins for a web UI with
+`ULTRACONTEXT_CORS_ORIGINS=https://dash.example.com,http://other:9000`.
+
 ## Quick Start
 
 ```bash

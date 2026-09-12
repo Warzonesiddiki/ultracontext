@@ -117,6 +117,22 @@ ultracontext serve --port 9000     # pick a port
 DATABASE_PROVIDER=postgres DATABASE_URL=… ultracontext serve    # or bring your own Postgres
 ```
 
+### The whole loop, offline
+
+`serve` records the port and key in `~/.ultracontext/server.json`, so
+everything else finds it automatically — **zero config, zero network**:
+
+```bash
+ultracontext serve    # terminal 1 — API + MCP + search on localhost
+ultracontext sync     # terminal 2 — daemon picks the local server up automatically
+```
+
+The capture daemon and the standalone MCP server resolve credentials in the
+same order: explicit `ULTRACONTEXT_API_KEY` / `ULTRACONTEXT_BASE_URL` → the
+local `server.json` → the hosted `config.json` (from `ultracontext config`).
+Set `ULTRACONTEXT_LOCAL=1` to force local mode. Your agents' transcripts never
+leave the machine.
+
 ## Quick Start
 
 ```bash
@@ -126,7 +142,7 @@ ultracontext          # start sync (daemon + dashboard)
 That's it. UltraContext watches your agents, ingests context in realtime, and the dashboard shows everything.
 
 ```bash
-ultracontext sync     # start sync (daemon + dashboard)
+ultracontext sync     # start sync (daemon + dashboard) — auto-finds a local server
 ultracontext serve    # run the context server locally (SQLite, free)
 ultracontext stats    # usage analytics for everything you captured (free)
 ultracontext backup   # safe local snapshot + protected restore (free)

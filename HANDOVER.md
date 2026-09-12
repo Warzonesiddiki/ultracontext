@@ -8,9 +8,10 @@ working tree, not recalled from memory.
 **Overall goal (unchanged):** make the commercial product 100% free, self-hosted
 and local — all features, no paywall, no telemetry, no network dependency.
 
-**This thread shipped: universal harness coverage (FREE-008)** and, later in
-the same thread, **FREE-006 (`ultracontext backup` + `ultracontext gc`)** — see
-the FREE-006 notes below the table.
+**This thread shipped: universal harness coverage (FREE-008)**, then
+**FREE-006 (`ultracontext backup` + `ultracontext gc`)**, then
+**FREE-007 (local-first daemon + MCP — the offline loop)** — see the notes
+below the table for FREE-006 and FREE-007.
 
 UltraContext now ingests **9** sources, up from 6:
 
@@ -111,6 +112,37 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   must have `PORT` set in its environment for the guard to see a custom port;
   help text says so.
 
+### FREE-007 — local-first daemon + MCP (shipped later in this thread)
+
+- **One shared precedence** for credentials (CLI entry, MCP config.ts):
+  explicit `ULTRACONTEXT_API_KEY`/`ULTRACONTEXT_BASE_URL` env →
+  `ULTRACONTEXT_LOCAL=1` (forced, hard error if no server) → local
+  `<dataHome>/server.json` (written by `serve`) → hosted
+  `<configHome>/.ultracontext/config.json` (from `config`, with a nudge line)
+  → interactive onboarding.
+- `apps/js-sdk/src/cli/local-server.mjs` — `readLocalServer()` /
+  `localDataHome()`: server.json = `{adminKey, apiKey, projectId, port}`;
+  port persisted by `serve` on every start (`apps/api/src/serve.ts`).
+- The entry sets `process.env` BEFORE spawning the daemon
+  (`launchSyncDaemon` passes `env: process.env`) — so the daemon/TUI need no
+  changes to get local mode; they still read env with the hosted default as
+  last resort.
+- **Gotcha:** the bin wrapper (`ultracontext.mjs`) loads `dist/cli/entry.*`
+  when it exists — CLI edits are NOT live until `corepack pnpm build` in
+  `apps/js-sdk` (or until dist is absent). This bit the E2E once.
+- **Gotcha:** onboarding's `config.json` lives under
+  `ULTRACONTEXT_CONFIG_HOME ?? $HOME` + `/.ultracontext` — deliberately NOT
+  `ULTRACONTEXT_HOME` (so project inference reads real session dirs).
+  `loadApiKeyFromConfig` previously ignored `ULTRACONTEXT_CONFIG_HOME`
+  (fixed in this thread).
+- MCP stdio diagnostics go to stderr (stdout is the JSON-RPC stream).
+- **Offline E2E recipe (all verified):** temp `ULTRACONTEXT_HOME` + fake
+  `HOME` with a `.claude/projects/<proj>/<sess>.jsonl`; `serve` on a test
+  port; `env -u ULTRACONTEXT_API_KEY node ultracontext.mjs sync start`
+  (prints "Using local UltraContext server at …"); contexts + search visible
+  on localhost; standalone MCP: `tsx src/stdio.ts` with no key env, drive
+  `initialize` + `tools/call list_contexts` / `search_contexts` over stdio.
+
 ---
 ## 2. Test + typecheck baseline (current)
 
@@ -118,11 +150,12 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
 packages/core        191 pass / 0 fail
 packages/storage      20 pass / 0 fail
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
-apps/js-sdk           43 pass / 0 fail   (was 30; +13: tests/cli/backup-gc.test.mjs)
+apps/js-sdk           48 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server)
 apps/sync             10 pass / 0 fail
 apps/api              38 pass / 0 fail
+apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 ────────────────────────────────────
-total                400 pass / 0 fail
+total                412 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -144,11 +177,10 @@ appending one freebuff message appended **1** (incremental).
 ## 3. What is still open (board)
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
-(interactive, now **64** tasks incl. FREE-008 SHIPPED), `README-REALITY-CHECK.md`.
+(interactive, now **64** tasks incl. FREE-006/007/008 SHIPPED), `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
-- **FREE-007** — daemon + MCP against local `ultracontext serve` (offline product).
 - **PROM-002** — version on append.
 - **SEC-002** (CORS), **CI-001** (no CI), **DATA-004/DATA-001**.
 - **More harnesses** — the user said "all harness use to use ai". Candidates not

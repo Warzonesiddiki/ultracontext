@@ -13,7 +13,8 @@
   },
   "scripts": {
     "build": "tsx src/stdio.ts --help || true",
-    "dev": "tsx src/stdio.ts"
+    "dev": "tsx src/stdio.ts",
+    "test": "node --import tsx --test src/*.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",

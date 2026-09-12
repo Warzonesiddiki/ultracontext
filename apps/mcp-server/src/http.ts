@@ -5,16 +5,11 @@ import { UltraContext } from "ultracontext";
 
 import { createMcpServer } from "./server.js";
 import { sdkReader } from "./reader-sdk.js";
+import { loadConfig } from "./config.js";
 
-// -- resolve config from env --------------------------------------------------
+// -- resolve config (env → local server.json → config.json) -------------------
 
-const apiKey = process.env.ULTRACONTEXT_API_KEY;
-if (!apiKey) {
-  console.error("ULTRACONTEXT_API_KEY is required");
-  process.exit(1);
-}
-
-const baseUrl = process.env.ULTRACONTEXT_BASE_URL ?? "https://api.ultracontext.ai";
+const { apiKey, baseUrl } = loadConfig();
 const port = Number(process.env.MCP_PORT ?? 3100);
 
 // -- start HTTP transport (stateless) -----------------------------------------

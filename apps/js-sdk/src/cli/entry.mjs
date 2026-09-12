@@ -8,6 +8,8 @@ import fs from "node:fs";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
 
+import { readLocalServer } from "./local-server.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const command = (process.argv[2] ?? "").trim().toLowerCase().replace(/^--?/, "");
 const subcommand = (process.argv[3] ?? "").trim().toLowerCase().replace(/^--?/, "");
@@ -93,10 +95,49 @@ function isDaemonRunning() {
 function loadApiKeyFromConfig() {
   if (process.env.ULTRACONTEXT_API_KEY) return;
   try {
-    const configPath = path.join(process.env.HOME || process.env.USERPROFILE || "~", ".ultracontext", "config.json");
+    // same convention as onboarding.mjs configPaths(): ULTRACONTEXT_CONFIG_HOME, else $HOME
+    const home = process.env.ULTRACONTEXT_CONFIG_HOME || process.env.HOME || process.env.USERPROFILE || "~";
+    const configPath = path.join(home, ".ultracontext", "config.json");
     const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
     if (cfg.apiKey) process.env.ULTRACONTEXT_API_KEY = String(cfg.apiKey);
   } catch { /* no config */ }
+}
+
+// Resolve API credentials with local-first precedence (FREE-007):
+//   1. explicit env (ULTRACONTEXT_API_KEY / ULTRACONTEXT_BASE_URL) — never overridden
+//   2. ULTRACONTEXT_LOCAL=1 — force the local server; hard error if it is absent
+//   3. local server.json (written by `ultracontext serve`) — fully offline
+//   4. hosted config.json (written by `ultracontext config`) — legacy, with a nudge
+// Sets process.env so the daemon/TUI (inherited via spawn env) use the same target.
+function applyLocalOrSavedKey() {
+  if (process.env.ULTRACONTEXT_API_KEY || process.env.ULTRACONTEXT_BASE_URL) return;
+
+  const forceLocal = process.env.ULTRACONTEXT_LOCAL === "1";
+  const local = readLocalServer();
+
+  if (forceLocal && !local) {
+    console.error(
+      "ULTRACONTEXT_LOCAL=1 but no local server was found — run `ultracontext serve` first.\n" +
+      "It is free and keeps everything on this machine (server.json appears in ~/.ultracontext)."
+    );
+    process.exit(1);
+  }
+
+  if (local) {
+    process.env.ULTRACONTEXT_API_KEY = local.apiKey;
+    process.env.ULTRACONTEXT_BASE_URL = local.url;
+    if (!forceLocal) {
+      console.log(`Using local UltraContext server at ${local.url} — data stays on this machine.`);
+    }
+    return;
+  }
+
+  if (!forceLocal) {
+    loadApiKeyFromConfig();
+    if (process.env.ULTRACONTEXT_API_KEY) {
+      console.log(`Tip: \`ultracontext serve\` runs the whole product locally — no account needed.`);
+    }
+  }
 }
 
 function normalizeTag(value) {
@@ -401,10 +442,10 @@ async function run() {
   // check for updates (silent on error, cached 24h)
   if (!SKIP_UPDATE_CHECK.has(command)) await checkForUpdate();
 
-  // load saved key, then onboard if still missing
+  // resolve credentials (local-first), then onboard if still missing
   let onboardResult = null;
   if (NEEDS_KEY.has(command)) {
-    loadApiKeyFromConfig();
+    applyLocalOrSavedKey();
     if (!process.env.ULTRACONTEXT_API_KEY) onboardResult = await runOnboarding();
   }
 

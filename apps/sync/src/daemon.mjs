@@ -106,8 +106,11 @@ async function writeStatusJson(cfg, stats, state, runtime) {
       projectPaths: cfg.projectPaths,
     },
   };
+  // SEC-004: status file is 0600 (rename carries the mode).
+  // encoding + mode must be ONE options object: node 22.22.3 silently
+  // drops `mode` in the 4-arg (file, data, encoding, options) form.
   const tmp = STATUS_FILE + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(snapshot, null, 2) + "\n", "utf8");
+  await fs.writeFile(tmp, JSON.stringify(snapshot, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   await fs.rename(tmp, STATUS_FILE);
 }
 
@@ -141,7 +144,7 @@ function setBootstrapState(key, value) {
     if (!data._bootstrapState) data._bootstrapState = {};
     data._bootstrapState[key] = String(value);
     const tmp = CONFIG_FILE + ".tmp.bs";
-    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     fsSync.renameSync(tmp, CONFIG_FILE);
   } catch { /* best effort */ }
 }
@@ -152,7 +155,7 @@ function deleteBootstrapState(key) {
     try { data = JSON.parse(fsSync.readFileSync(CONFIG_FILE, "utf8")); } catch { /* empty */ }
     if (data._bootstrapState) delete data._bootstrapState[key];
     const tmp = CONFIG_FILE + ".tmp.bs";
-    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     fsSync.renameSync(tmp, CONFIG_FILE);
   } catch { /* best effort */ }
 }
@@ -396,8 +399,13 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     } catch { /* ignore */ }
 
     const payload = JSON.stringify({ ...existing, ...serializeConfigPrefs() }, null, 2);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, `${payload}\n`, "utf8");
+    // SEC-004: config may hold the raw API key — 0700 dir, 0600 file.
+    // tmp + rename so an existing 0644 file is replaced, not re-written in place.
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    try { await fs.chmod(path.dirname(target), 0o700); } catch { /* best effort */ }
+    const tmp = `${target}.tmp.cfg`;
+    await fs.writeFile(tmp, `${payload}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(tmp, target);
     return { saved: true, file: target };
   }
 

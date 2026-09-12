@@ -144,7 +144,7 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   on localhost; standalone MCP: `tsx src/stdio.ts` with no key env, drive
   `initialize` + `tools/call list_contexts` / `search_contexts` over stdio.
 
-### PROM-002 — version on append, the zero-copy git model (shipped last in this thread)
+### PROM-002 — version on append, the zero-copy git model (shipped in this thread)
 
 - **Model:** version heads are two flavours. *Snapshot* heads (create /
   update / delete) own a complete copy of the message state. *Append* heads
@@ -168,7 +168,7 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   = version 2 (was 1). One API test assertion updated; 5 new core tests cover
   time-travel, zero-copy, chain linkage and update-then-append.
 
-### SEC-002 — CORS origin allowlist (shipped last in this thread)
+### SEC-002 — CORS origin allowlist (shipped in this thread)
 
 - `apps/api/src/middleware/cors.ts` no longer sends `Access-Control-Allow-Origin: *`.
   Allowed origins: loopback (http/https on `localhost` / `127.0.0.1` / `::1`,
@@ -179,6 +179,22 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
 - `corsAllowed(origin, env)` is exported for reuse/tests; the middleware reads
   `process.env` at request time (so the env var can change without a restart).
 
+### SEC-004 — 0600/0700 on everything under ~/.ultracontext (shipped last in this thread)
+
+- Writers fixed: onboarding `writeConfig` (config.json — holds the raw API key;
+  tmp+rename + chmod, dir 0700), daemon `persistConfigPrefsToFile` (tmp+rename),
+  `writeStatusJson` (tmp+rename), bootstrap-state writes, `lock.mjs` (lock 0600,
+  dir 0700). Verified live on a fresh `sync start`: dir 700, config.json 600,
+  status.json 600, daemon.lock 600.
+- **Two real gotchas cost time here (see §5):**
+  1. Node 22.22.3 silently drops `mode` in the 4-arg
+     `fs.writeFile(file, data, encoding, options)` form. Always use one options
+     object: `{ encoding: "utf8", mode: 0o600 }`.
+  2. The js-sdk launcher runs `dist/cli/*.mjs` bundles, NOT `src/`. Daemon-side
+     fixes are invisible until `cd apps/js-sdk && corepack pnpm build`.
+- 2 new unit tests (js-sdk 48 → 50) cover fresh-write 0600/0700 and
+  re-locking a pre-existing 0644 config.
+
 ---
 ## 2. Test + typecheck baseline (current)
 
@@ -186,12 +202,12 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
 packages/core        196 pass / 0 fail   (was 191; +5 PROM-002 version-on-append)
 packages/storage      20 pass / 0 fail
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
-apps/js-sdk           48 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server)
+apps/js-sdk           50 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server, +2 SEC-004 perms)
 apps/sync             10 pass / 0 fail
 apps/api              49 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests)
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 ────────────────────────────────────
-total                426 pass / 0 fail
+total                428 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -213,7 +229,8 @@ appending one freebuff message appended **1** (incremental).
 ## 3. What is still open (board)
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
-(interactive, now **64** tasks incl. FREE-006/007/008 SHIPPED), `README-REALITY-CHECK.md`.
+(interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-004 SHIPPED
+this thread), `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
@@ -263,6 +280,13 @@ Next highest-value (plus the open-ended harness list):
   over `npx`. `edit_file` is rooted at the workspace — use bash/sed for /tmp files.
 - **Node:** v22.22.3. `node:sqlite` works without flags here (experimental
   warning is fine); the opencode parser degrades to "no events" if it's absent.
+  **`mode` is silently dropped in the 4-arg `fs.writeFile(file, data, encoding,
+  options)` form** — always pass one options object:
+  `{ encoding: "utf8", mode: 0o600 }` (bit this in SEC-004; files landed 0644).
+- **js-sdk runs from `dist/`, not `src/`:** `ultracontext.mjs` resolves
+  `dist/cli/*.mjs` bundles first. Any fix in `apps/sync` or `apps/js-sdk/src`
+  that the daemon executes is invisible until
+  `cd apps/js-sdk && corepack pnpm build` (dist is gitignored).
 - **Headless daemon:** `node apps/sync/src/index.mjs` (plain ESM — **no tsx in
   apps/sync**). State lives under `$HOME/.ultracontext`; point `HOME` at a fake
   dir for isolated E2E runs. `DAEMON_BOOTSTRAP_MODE=all` to ingest existing files.

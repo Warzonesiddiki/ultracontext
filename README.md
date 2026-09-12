@@ -109,8 +109,9 @@ Free and self-hosted. No account, no quota, no paywall, no network required.
 ```
 
 On first run it generates an admin key and an API key, writes them to
-`~/.ultracontext/` with `0600` permissions, and prints a ready-to-paste command
-for connecting an agent. Everything stays on your disk.
+`~/.ultracontext/` with `0600` permissions (and keeps the directory itself
+`0700`), and prints a ready-to-paste command for connecting an agent.
+Everything stays on your disk.
 
 ```bash
 ultracontext serve --port 9000     # pick a port

@@ -38,11 +38,13 @@ export async function acquireFileLock({
   host = "",
 } = {}) {
   const resolved = path.resolve(lockPath);
-  await fs.mkdir(path.dirname(resolved), { recursive: true });
+  // SEC-004: the .ultracontext dir may hold the API key — keep it 0700/0600.
+  await fs.mkdir(path.dirname(resolved), { recursive: true, mode: 0o700 });
+  try { await fs.chmod(path.dirname(resolved), 0o700); } catch { /* best effort */ }
 
   let handle;
   try {
-    handle = await fs.open(resolved, "wx");
+    handle = await fs.open(resolved, "wx", 0o600);
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
 
@@ -54,7 +56,7 @@ export async function acquireFileLock({
       } catch {
         // ignore
       }
-      handle = await fs.open(resolved, "wx");
+      handle = await fs.open(resolved, "wx", 0o600);
     } else {
       const reason = existingPid
         ? `UltraContext daemon already running (PID: ${existingPid})`

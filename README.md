@@ -187,7 +187,7 @@ Notes:
 For builders who want to go deeper. Git-like primitives for context engineering.
 
 - **Five methods** — Create, get, append, update, delete. That's it.
-- **Automatic versioning** — Edits and deletes create a new version. Full history out of the box.
+- **Automatic versioning** — Every append, edit, or delete creates a new version. Full history out of the box.
 - **Time-travel** — Jump to any point in your context history, by version or by timestamp.
 - **Full-text search** — Query every captured session by what it says.
 - **Analytics** — Totals, per-agent breakdown and a day/week/month series, computed over your own data.

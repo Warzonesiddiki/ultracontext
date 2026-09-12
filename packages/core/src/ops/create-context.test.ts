@@ -180,7 +180,7 @@ describe('createContext', () => {
 
         // copied nodes match source content, in order, parented to the source nodes
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.equal(copied.length, 2);
         assert.deepEqual(copied.map((n) => n.content), [
             { role: 'user', text: 'a' },
@@ -201,7 +201,7 @@ describe('createContext', () => {
 
         // new head exists but holds no message nodes
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.equal(copied.length, 0);
     });
 
@@ -220,7 +220,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'v0-msg' }]);
     });
 
@@ -236,7 +236,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'v1-msg-a' }, { text: 'v1-msg-b' }]);
     });
 
@@ -296,7 +296,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'm0' }]);
     });
 
@@ -345,7 +345,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'm0' }, { text: 'm1' }]);
     });
 
@@ -360,7 +360,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'm0' }]);
     });
 

@@ -10,8 +10,9 @@ and local — all features, no paywall, no telemetry, no network dependency.
 
 **This thread shipped: universal harness coverage (FREE-008)**, then
 **FREE-006 (`ultracontext backup` + `ultracontext gc`)**, then
-**FREE-007 (local-first daemon + MCP — the offline loop)** — see the notes
-below the table for FREE-006 and FREE-007.
+**FREE-007 (local-first daemon + MCP — the offline loop)**, then
+**PROM-002 (version on append — the git model)** — see the notes below the
+table for FREE-006, FREE-007 and PROM-002.
 
 UltraContext now ingests **9** sources, up from 6:
 
@@ -143,19 +144,43 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   on localhost; standalone MCP: `tsx src/stdio.ts` with no key env, drive
   `initialize` + `tools/call list_contexts` / `search_contexts` over stdio.
 
+### PROM-002 — version on append, the zero-copy git model (shipped last in this thread)
+
+- **Model:** version heads are two flavours. *Snapshot* heads (create /
+  update / delete) own a complete copy of the message state. *Append* heads
+  (`metadata.operation === 'append'`) own ONLY their new messages — the first
+  one links via `prev_id` into the previous head's tail. Content at a head =
+  its own messages plus, while the head is an append, the previous head's
+  content — stopping at the nearest snapshot head. One batched query
+  (`findNonContextNodesByContextIds`, new on all 4 adapters + memory) + an
+  in-memory `prev_id` walk (`getOrderedNodes(storage, rootId, headId)` —
+  **signature changed**, all callers updated incl. tests).
+- **getVersions** now orders by the `prev_id` chain (not `created_at`) so
+  same-millisecond append heads stay ordered.
+- `appendMessages` inserts head + messages inside the serializable tx and
+  rolls back the orphaned head (best effort) if the message insert throws.
+- **Backward compatible:** legacy DBs (single create head) read identically —
+  the walk stops immediately at a non-append head.
+- **Not fixed here (separate board item):** update/delete still copy O(n)
+  (API-004). The zero-copy model removes the per-APPEND cost, which is the
+  dominant one for daemon capture.
+- Version counts moved for append-then-delete sequences: create+append+delete
+  = version 2 (was 1). One API test assertion updated; 5 new core tests cover
+  time-travel, zero-copy, chain linkage and update-then-append.
+
 ---
 ## 2. Test + typecheck baseline (current)
 
 ```
-packages/core        191 pass / 0 fail
+packages/core        196 pass / 0 fail   (was 191; +5 PROM-002 version-on-append)
 packages/storage      20 pass / 0 fail
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
 apps/js-sdk           48 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server)
 apps/sync             10 pass / 0 fail
-apps/api              38 pass / 0 fail
+apps/api              38 pass / 0 fail   (1 assertion updated: delete after append => version 2)
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 ────────────────────────────────────
-total                412 pass / 0 fail
+total                415 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -181,7 +206,6 @@ appending one freebuff message appended **1** (incremental).
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
-- **PROM-002** — version on append.
 - **SEC-002** (CORS), **CI-001** (no CI), **DATA-004/DATA-001**.
 - **More harnesses** — the user said "all harness use to use ai". Candidates not
   yet covered: Amp, Cline, Roo Code, Kilo Code, Windsurf, Zed, Aider, Goose,

@@ -2,7 +2,8 @@
 // APPEND MESSAGES — append messages to a context (ported from POST /contexts/:id)
 // =============================================================================
 
-import { buildNodeInsertRecords, findHead, findTail, getOrderedNodes, getVersions } from '../context-chain';
+import { buildNodeInsertRecords, findHead, getOrderedNodes, getVersions } from '../context-chain';
+import { generatePublicId } from '../public-ids';
 import type { MessageView } from '../message-view';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
@@ -35,28 +36,52 @@ export async function appendMessages(
             const head = await findHead(tx, root.public_id);
             if (!head) return { code: 'internal', message: 'HEAD not found' };
 
-            // normalize input to an array and locate the existing tail
+            // normalize input to an array; the full content at the current
+            // head gives both the existing count and the chain tail
             const items = Array.isArray(messages) ? messages : [messages];
-            const existingNodes = await getOrderedNodes(tx, head.public_id);
+            const existingNodes = await getOrderedNodes(tx, root.public_id, head.public_id);
             const existingCount = existingNodes.length;
-            const tailPublicId = await findTail(tx, head.public_id);
+            const tailPublicId = existingCount > 0 ? existingNodes[existingCount - 1].public_id! : null;
 
             // split metadata out of each message; the rest is content
             const nodeInputs = items.map((msg) => {
                 const { metadata, ...content } = msg as Record<string, unknown>;
                 return { type: 'message', content, metadata: (metadata ?? {}) as Record<string, unknown> };
             });
-            const insertRecords = buildNodeInsertRecords(nodeInputs, projectId, head.public_id, tailPublicId);
 
-            // append the new message nodes after the tail
-            const createdNodes = await tx.insertNodes(insertRecords);
+            // Every append is a new version (PROM-002): a fresh head records
+            // the append, and only the NEW messages are stored under it — the
+            // first one links via prev_id into the previous head's tail, so
+            // no message is ever copied (zero-copy append).
+            const newHeadId = generatePublicId('context');
+            const insertRecords = buildNodeInsertRecords(nodeInputs, projectId, newHeadId, tailPublicId);
 
-            // version reflects the current head count (append adds no new head)
+            let createdMessages;
+            try {
+                await tx.insertNodes({
+                    public_id: newHeadId,
+                    project_id: projectId,
+                    type: 'context',
+                    context_id: root.public_id,
+                    prev_id: head.public_id,
+                    content: {},
+                    metadata: { operation: 'append' },
+                });
+                createdMessages = await tx.insertNodes(insertRecords);
+            } catch (error) {
+                // roll back the orphaned head (best effort), then report failure
+                try {
+                    await tx.deleteNodeByPublicId(projectId, newHeadId);
+                } catch { /* already rolled back */ }
+                throw error;
+            }
+
+            // version reflects the current head count (this append added one)
             const versions = await getVersions(tx, root.public_id);
             const currentVersion = versions.length - 1;
 
             // shape each created node: content + generated id + index + metadata
-            const data: MessageView[] = createdNodes.map((node, i: number) => ({
+            const data: MessageView[] = createdMessages.map((node, i: number) => ({
                 ...(node.content ?? {}),
                 id: node.public_id!,
                 index: existingCount + i,

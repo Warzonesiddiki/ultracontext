@@ -120,6 +120,12 @@ export interface StorageAdapter {
     findVersions(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'created_at' | 'metadata'>[]>;
     findNonContextNodes(contextId: string): Promise<NodeRow[]>;
     /**
+     * All non-context nodes whose context_id is one of the given ids (batch
+     * form of findNonContextNodes). Used to read a version's cumulative
+     * message chain across append heads (PROM-002).
+     */
+    findNonContextNodesByContextIds(contextIds: string[]): Promise<NodeRow[]>;
+    /**
      * Resolve a ROOT context. MUST be project-scoped — an unscoped lookup here
      * is a cross-tenant read (see SEC-001).
      */

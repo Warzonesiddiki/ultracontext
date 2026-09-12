@@ -279,7 +279,8 @@ describe('DELETE /contexts/:id with body (message delete)', () => {
         assert.equal(res.status, 200);
         const body = await res.json();
         assert.equal(body.data.length, 1);
-        assert.equal(body.version, 1);
+        // create(0) + append(1, PROM-002) + delete(2)
+        assert.equal(body.version, 2);
     });
 
     it('should delete messages by index', async () => {

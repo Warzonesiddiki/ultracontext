@@ -43,6 +43,14 @@ export class DrizzleAdapter implements StorageAdapter {
             .where(and(eq(nodes.context_id, contextId), ne(nodes.type, 'context'))) as Promise<NodeRow[]>;
     }
 
+    async findNonContextNodesByContextIds(contextIds: string[]): Promise<NodeRow[]> {
+        if (contextIds.length === 0) return [];
+        return this.db
+            .select()
+            .from(nodes)
+            .where(and(inArray(nodes.context_id, contextIds), ne(nodes.type, 'context'))) as Promise<NodeRow[]>;
+    }
+
     async findRootContext(projectId: number, publicId: string) {
         const rows = await this.db
             .select({ public_id: nodes.public_id })

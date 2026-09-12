@@ -22,7 +22,7 @@ export type GetContextOptions = {
 type VersionEntry = {
     version: number;
     created_at: string;
-    operation: 'create' | 'update' | 'delete';
+    operation: 'create' | 'append' | 'update' | 'delete';
     affected: string[] | null;
     metadata?: Record<string, unknown>;
 };
@@ -78,7 +78,7 @@ export async function getContext(
     if (!head) return ok({ data: [], version: 0 });
 
     // ordered messages under the head, optionally filtered by the before cutoff
-    let orderedNodes = await getOrderedNodes(storage, head.public_id);
+    let orderedNodes = await getOrderedNodes(storage, root.public_id, head.public_id);
     if (beforeTs !== undefined) {
         orderedNodes = orderedNodes.filter((n) => new Date(n.created_at).getTime() <= beforeTs!);
     }

@@ -57,6 +57,17 @@ export class SupabaseAdapter implements StorageAdapter {
         return (data ?? []) as NodeRow[];
     }
 
+    async findNonContextNodesByContextIds(contextIds: string[]): Promise<NodeRow[]> {
+        if (contextIds.length === 0) return [];
+        const { data, error } = await this.client
+            .from('nodes')
+            .select('*')
+            .in('context_id', contextIds)
+            .neq('type', 'context');
+        if (error) throw error;
+        return (data ?? []) as NodeRow[];
+    }
+
     async findRootContext(projectId: number, publicId: string) {
         const { data, error } = await this.client
             .from('nodes')

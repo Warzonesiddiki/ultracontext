@@ -106,7 +106,7 @@ export async function createContext(
 
         // gather + filter + slice the source nodes off the chosen head
         if (sourceHead) {
-            sourceNodes = await getOrderedNodes(storage, sourceHead.public_id);
+            sourceNodes = await getOrderedNodes(storage, from, sourceHead.public_id);
 
             if (beforeTs !== undefined) {
                 sourceNodes = sourceNodes.filter((n) => new Date(n.created_at).getTime() <= beforeTs);

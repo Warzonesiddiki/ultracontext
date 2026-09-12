@@ -75,7 +75,7 @@ export async function deleteMessages(
     if (!currentHead) return err('internal', 'HEAD not found');
 
     // load the ordered messages under the current head
-    const orderedNodes = await getOrderedNodes(storage, currentHead.public_id);
+    const orderedNodes = await getOrderedNodes(storage, root.public_id, currentHead.public_id);
     const nodeIds = new Set(orderedNodes.map((n) => n.public_id));
 
     // resolve each target to a concrete message public id

@@ -66,7 +66,7 @@ export async function updateMessages(
     if (!currentHead) return err('internal', 'HEAD not found');
 
     // load current messages, indexed by public id for lookup
-    const orderedNodes = await getOrderedNodes(storage, currentHead.public_id);
+    const orderedNodes = await getOrderedNodes(storage, root.public_id, currentHead.public_id);
     const nodeIds = new Set(orderedNodes.map((n) => n.public_id));
 
     // resolve each update's selector (id or index) to a concrete target id

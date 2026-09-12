@@ -8,7 +8,10 @@ working tree, not recalled from memory.
 **Overall goal (unchanged):** make the commercial product 100% free, self-hosted
 and local — all features, no paywall, no telemetry, no network dependency.
 
-**This session shipped: universal harness coverage (FREE-008).**
+**This thread shipped: universal harness coverage (FREE-008)** and, later in
+the same thread, **FREE-006 (`ultracontext backup` + `ultracontext gc`)** — see
+the FREE-006 notes below the table.
+
 UltraContext now ingests **9** sources, up from 6:
 
 | Source | Parser | What it reads | Verified against |
@@ -81,6 +84,33 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
 - `buildSources()` registers the three new sources (search "opencode", "agy",
   "freebuff" in `buildSources`).
 
+### FREE-006 — backup + gc (shipped later in this thread)
+
+- `apps/js-sdk/src/cli/backup.mjs` — `ultracontext backup`. Snapshot via
+  node:sqlite's online `backup(src, dest)`: open source RW → best-effort
+  `wal_checkpoint(TRUNCATE)` → backup → **close the source connection** → wait
+  (≤5s poll) for the destination to be non-empty → open dest RO →
+  `PRAGMA integrity_check`. Keep-N per family (`--keep`, default 10);
+  `pre-restore-*.sqlite` safety copies are never auto-pruned. `--full` =
+  0600 tar.gz of DB + server.json + config (contains API keys). Restore:
+  verify file → port-probe guard → safety snapshot → atomic rename.
+- `apps/js-sdk/src/cli/gc.mjs` — `ultracontext gc --keep <12h|30d|4w|6mo|1y>`
+  (default 30d). Session age = **last activity** (max `created_at` across the
+  root, its version heads, and their messages), so touched sessions survive.
+  Deletes FTS rows → messages → version heads → root, in 200-id chunks per
+  transaction. `--dry-run`, `--vacuum`.
+- **node:sqlite `backup()` gotcha (verified 2026-09-12):** the module-level
+  `backup(srcDb, destPath)` export is ASYNC — the destination stays 0 bytes
+  until the SOURCE connection closes. Verifying between `backup()` and
+  `close()` reads an empty DB; exiting the process before settlement throws
+  an unhandled `Error: not an error` (ERR_SQLITE_ERROR).
+- **`-wal` presence is NOT a "server running" signal** (clean closes leave
+  `-wal`/`-shm` behind — reproduced). `localServerRunning(dataHome)` probes
+  `http://127.0.0.1:${PORT||8787}/contexts?limit=1` with the Bearer key from
+  `<home>/server.json`; any HTTP response = running (1.5s timeout). The CLI
+  must have `PORT` set in its environment for the guard to see a custom port;
+  help text says so.
+
 ---
 ## 2. Test + typecheck baseline (current)
 
@@ -88,11 +118,11 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
 packages/core        191 pass / 0 fail
 packages/storage      20 pass / 0 fail
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
-apps/js-sdk           30 pass / 0 fail
+apps/js-sdk           43 pass / 0 fail   (was 30; +13: tests/cli/backup-gc.test.mjs)
 apps/sync             10 pass / 0 fail
 apps/api              38 pass / 0 fail
 ────────────────────────────────────
-total                387 pass / 0 fail
+total                400 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -117,8 +147,7 @@ appending one freebuff message appended **1** (incremental).
 (interactive, now **64** tasks incl. FREE-008 SHIPPED), `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
-Next highest-value (unchanged, plus the open-ended harness list):
-- **FREE-006** — `ultracontext backup` + `ultracontext gc`.
+Next highest-value (plus the open-ended harness list):
 - **FREE-007** — daemon + MCP against local `ultracontext serve` (offline product).
 - **PROM-002** — version on append.
 - **SEC-002** (CORS), **CI-001** (no CI), **DATA-004/DATA-001**.

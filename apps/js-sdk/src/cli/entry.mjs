@@ -39,6 +39,8 @@ Commands:
   sync start    Start daemon in background (no TUI)
   sync stop     Stop a running daemon
   sync status   Show daemon status
+  backup        Free local backups of your data (+ --list / --restore / --full)
+  gc            Free log retention (drop old sessions, e.g. --keep 90d)
   config        Run the setup wizard
   switch        Switch session to another agent (codex, claude)
   update        Update CLI globally via npm/pnpm/bun
@@ -330,7 +332,8 @@ async function runUpdate(rawArgs) {
 
 // ── update check ────────────────────────────────────────────────
 
-const SKIP_UPDATE_CHECK = new Set(["version", "v", "update", "upgrade", "help", "h", "stop", "sync", ""]);
+// backup/gc are purely local — they must work with zero network
+const SKIP_UPDATE_CHECK = new Set(["version", "v", "update", "upgrade", "help", "h", "stop", "sync", "", "backup", "gc"]);
 
 async function fetchLatestVersion() {
   const controller = new AbortController();
@@ -448,6 +451,19 @@ async function run() {
     case "serve": {
       const { runServe } = await import("./serve.mjs");
       await runServe(process.argv.slice(3));
+      break;
+    }
+
+    // local data management — no API key needed, everything stays on disk
+    case "backup": {
+      const { runBackup } = await import("./backup.mjs");
+      await runBackup(process.argv.slice(3));
+      break;
+    }
+
+    case "gc": {
+      const { runGc } = await import("./gc.mjs");
+      await runGc(process.argv.slice(3));
       break;
     }
 

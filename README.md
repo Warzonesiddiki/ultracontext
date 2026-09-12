@@ -65,6 +65,7 @@ Open source. Framework-agnostic. Customizable via the git-like Context API.
 | Context API | Git-like context engineering API. Store, version, and retrieve agent context with zero complexity. |
 | Search | Full-text search across every captured session. Find a plan by what it says, not by its ID. |
 | Analytics | Usage totals, per-agent breakdown and a day/week/month series — computed from your own database. |
+| Backups | Safe online snapshots of your local database, protected restore, and a retention GC — free and local. |
 | Self-hosted | Run the whole thing on your own machine against a local SQLite file. No account, no cloud, no cost. |
 
 ---
@@ -128,6 +129,8 @@ That's it. UltraContext watches your agents, ingests context in realtime, and th
 ultracontext sync     # start sync (daemon + dashboard)
 ultracontext serve    # run the context server locally (SQLite, free)
 ultracontext stats    # usage analytics for everything you captured (free)
+ultracontext backup   # safe local snapshot + protected restore (free)
+ultracontext gc       # retention: drop sessions older than your window (free)
 ultracontext switch   # continue a session in a different agent
 ultracontext stop     # stop daemon
 ultracontext config   # run setup wizard
@@ -233,6 +236,30 @@ Running Postgres? Point any BI tool (Metabase, Grafana, Superset, plain `psql`)
 at the `project_activity_daily` / `project_activity_weekly` views in
 [apps/postgres/init.sql](./apps/postgres/init.sql). It is your database; nothing
 is hidden behind an API we control.
+
+### Backups & retention
+
+Your data is one local SQLite file, and everything you need to protect it is built in — no paid backup tier, nothing leaves the machine.
+
+```bash
+ultracontext backup                    # safe snapshot (works while the server runs)
+ultracontext backup --list             # show existing backups
+ultracontext backup --restore <file>   # roll back (auto-saves your current state first)
+ultracontext backup --full             # + config, API keys, daemon state (0600 .tar.gz)
+ultracontext gc --keep 30d             # drop sessions idle for 30+ days
+ultracontext gc --keep 6mo --dry-run   # preview only, delete nothing
+```
+
+- **Snapshots are safe even while the server is running** — they use SQLite's
+  online backup API and are `integrity_check`-verified before being reported.
+  The 10 newest are kept automatically (`--keep` to change).
+- **Restore is protected.** The current database is saved as
+  `pre-restore-<timestamp>.sqlite` before anything is replaced, and restore
+  refuses to run while the local server is running (`--force` overrides).
+- **Retention is opt-in and previewable.** `gc` drops whole sessions — every
+  version and message — whose last activity is older than the window.
+  `--dry-run` shows what would go, `--vacuum` reclaims the disk space.
+  A good cron: `0 3 * * * ultracontext gc --keep 6mo`.
 
 ### No paywall, ever
 

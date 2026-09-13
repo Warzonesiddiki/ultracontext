@@ -337,6 +337,11 @@ export class SqliteAdapter implements StorageAdapter {
         await this.db.delete(projects).where(eq(projects.id, id));
     }
 
+    async listProjects() {
+        const rows = await this.db.select({ id: projects.id }).from(projects);
+        return rows.map((r) => ({ id: r.id }));
+    }
+
     // -- transactions ---------------------------------------------------------
 
     // SQLite serializes writes by default — isolationLevel is accepted for API

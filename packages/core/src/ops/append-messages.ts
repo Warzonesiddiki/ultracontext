@@ -53,26 +53,30 @@ export async function appendMessages(
             // the append, and only the NEW messages are stored under it — the
             // first one links via prev_id into the previous head's tail, so
             // no message is ever copied (zero-copy append).
+            //
+            // DATA-001: head + messages go out as ONE insertNodes call. On a
+            // transactional backend that's one statement inside the tx; on a
+            // transaction-less one (Supabase REST) it is a single SQL INSERT —
+            // so the head and its messages can never commit separately and a
+            // crash mid-op can never leave an orphaned head.
             const newHeadId = generatePublicId('context');
             const insertRecords = buildNodeInsertRecords(nodeInputs, projectId, newHeadId, tailPublicId);
-
             let createdMessages;
+            const headRecord = {
+                public_id: newHeadId,
+                project_id: projectId,
+                type: 'context' as const,
+                context_id: root.public_id,
+                prev_id: head.public_id,
+                content: {},
+                metadata: { operation: 'append', child_count: insertRecords.length },
+            };
+
             try {
-                await tx.insertNodes({
-                    public_id: newHeadId,
-                    project_id: projectId,
-                    type: 'context',
-                    context_id: root.public_id,
-                    prev_id: head.public_id,
-                    content: {},
-                    metadata: { operation: 'append' },
-                });
-                createdMessages = await tx.insertNodes(insertRecords);
+                const created = await tx.insertNodes([headRecord, ...insertRecords]);
+                createdMessages = created.filter((n) => n.public_id !== newHeadId);
             } catch (error) {
-                // roll back the orphaned head (best effort), then report failure
-                try {
-                    await tx.deleteNodeByPublicId(projectId, newHeadId);
-                } catch { /* already rolled back */ }
+                // single statement failed → nothing was written; report failure
                 throw error;
             }
 

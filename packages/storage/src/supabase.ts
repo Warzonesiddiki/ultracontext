@@ -324,10 +324,23 @@ export class SupabaseAdapter implements StorageAdapter {
         if (error) throw error;
     }
 
+    async listProjects() {
+        const { data, error } = await this.client.from('projects').select('id');
+        if (error) throw error;
+        return (data ?? []).map((row) => ({ id: Number(row.id) }));
+    }
+
     // -- transactions ---------------------------------------------------------
 
-    // Supabase REST lacks multi-statement tx + isolation levels. Runs inline;
-    // partial failures + race conditions possible. Options arg accepted for API parity.
+    // Supabase REST (PostgREST) has no multi-statement transactions and no
+    // isolation levels, so this runs inline. That is SAFE today because every
+    // version write in the core ops is a SINGLE insertNodes call — one SQL
+    // statement — so a version's head and children can never commit
+    // separately (DATA-001). Remaining known limitation: two CONCURRENT
+    // writers on the same context can both commit (each sees the other's
+    // head as a sibling branch); reads degrade gracefully (versions stay
+    // listed, HEAD = newest) but last-write-wins applies. The isolationLevel
+    // option is accepted for API parity and intentionally ignored.
     async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>, _options?: TransactionOptions): Promise<T> {
         return fn(this);
     }

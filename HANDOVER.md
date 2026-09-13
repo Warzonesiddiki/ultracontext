@@ -248,16 +248,57 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   `node --import tsx --test "src/*.test.ts" "src/*/*.test.ts"`.
 - 12 new tests (storage 20 → 32): real in-memory SQLite (fresh, idempotent,
   legacy-with-data, rollback round-trip, second-migration up/down, registry
-  guard) + Postgres runner via mocked `Sql` (transactional up, no-op when
-  current, rollback SQL, registry guard). **No live Postgres in CI yet** —
-  the PG path is validated by the mock; add a PG service job when one is
-  available (see CI-001 promotion).
+  guard) + Postgres runner via mocked `Sql` (transactional up, rollback SQL,
+  registry guard). **No live Postgres in CI yet** — the PG path is validated
+  by the mock; add a PG service job when one is available (see CI-001
+  promotion).
+
+### DATA-001 — crash consistency without REST transactions (shipped last in this thread)
+
+- **The problem:** Supabase REST (PostgREST) has no multi-statement
+  transactions, so `SupabaseAdapter.transaction()` was a no-op — and the
+  core ops wrote a version's head and its children as SEPARATE calls. A
+  crash between them left an orphaned head (a version that reads as an
+  empty/broken context).
+- **The fix (structural, backend-agnostic):**
+  1. **Single-statement version writes** — append/update/delete/create now
+     issue ONE `insertNodes([head, ...children])` call. On SQLite/Postgres
+     it's one statement inside the real tx; on Supabase REST it is one SQL
+     INSERT — atomic either way. A version can never commit half-way. The
+     old two-stage writes + `rollbackHead`/`rollbackRootContext` helpers are
+     gone (4 stale rollback tests rewritten to the new semantics).
+  2. **Head-first permanent delete** — `permanentlyDelete` deletes each
+     version head BEFORE its messages, so a crash mid-delete leaves a chain
+     gap (reads fall back to created_at order) + invisible garbage — never
+     an orphaned head.
+  3. **`child_count` marker** — every op writes the expected child count
+     into the head's metadata.
+  4. **`repairOrphanedHeads(storage, projectId)`** (new core op) — removes
+     heads whose marker says children were expected but none exist, and
+     partial-create roots with zero branches. Conservative: legitimate empty
+     heads (delete-all, empty create, empty append → child_count 0) are
+     untouched. Wired as a startup pass in `serve.ts` and `worker.ts`
+     (production!) via `apps/api/src/repair.ts` + a new `listProjects()`
+     adapter method (implemented in all 4 adapters).
+- **Known remaining limitation (documented in SupabaseAdapter.transaction):**
+  two CONCURRENT writers on the same context can both commit (no isolation
+  on REST); reads degrade gracefully (both versions listed, HEAD = newest),
+  last-write-wins. The `isolationLevel` option is still ignored.
+- **10 new chaos tests** (`core/src/ops/crash-consistency.test.ts`): a
+  fault-injection proxy kills the process at the write point and asserts the
+  chain is unchanged (append/update/create/delete), that permanent-delete
+  crashes leave no orphaned head, and that repair heals marker-marked
+  orphans while leaving legitimate empty heads alone. Core 196 → 206.
+- Gotcha: a Proxy that wraps `transaction()` must re-hand the callback to
+  the PROXY (not the inner target) or hooks on the tx are bypassed; and
+  `assert.equal('ok' in result, false)` is always false — Result always has
+  the key — use `result.ok === false`.
 
 ---
 ## 2. Test + typecheck baseline (current)
 
 ```
-packages/core        196 pass / 0 fail   (was 191; +5 PROM-002 version-on-append)
+packages/core        206 pass / 0 fail   (was 191; +5 PROM-002, +10 DATA-001 crash-consistency)
 packages/storage      32 pass / 0 fail   (was 20; +12 DATA-004 migrations)
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
 apps/js-sdk           50 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server, +2 SEC-004 perms)
@@ -266,7 +307,7 @@ apps/api              49 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 apps/python-sdk       20 pass / 0 fail   (NEW in CI-001: tests/test_client.py) + mypy strict clean
 ────────────────────────────────────
-total                460 pass / 0 fail
+total                470 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -289,12 +330,12 @@ appending one freebuff message appended **1** (incremental).
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
 (interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-004,
-CI-001, DATA-004 SHIPPED this thread), `README-REALITY-CHECK.md`.
+CI-001, DATA-004, DATA-001 SHIPPED this thread), `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
-- **DATA-001** (real transactions on the Supabase adapter), **PROM-003**
-  (switch docs + Linux/Windows).
+- **PROM-003** (document `switch` + Linux/Windows support), then the
+  harness candidates.
 - **CI promotion (admin actions):** grant `workflows` permission to the
   connected GitHub App → copy `docs/ci/ci.yml.pending` to
   `.github/workflows/ci.yml` → branch protection on main (required status

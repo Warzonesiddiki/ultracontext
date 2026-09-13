@@ -19,42 +19,6 @@ export type CreateContextInput = {
     metadata?: Record<string, unknown>;
 };
 
-// -- rollback helpers ---------------------------------------------------------
-
-async function rollbackHead(storage: StorageAdapter, projectId: number, headId: string) {
-    try {
-        await storage.deleteNodesByContextId(projectId, headId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for children of head ${headId}: ${message}`);
-    }
-
-    try {
-        await storage.deleteNodeByPublicId(projectId, headId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for head ${headId}: ${message}`);
-    }
-}
-
-async function rollbackRootContext(storage: StorageAdapter, projectId: number, rootId: string, headId: string) {
-    await rollbackHead(storage, projectId, headId);
-
-    try {
-        await storage.deleteNodesByContextId(projectId, rootId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for branches of root ${rootId}: ${message}`);
-    }
-
-    try {
-        await storage.deleteNodeByPublicId(projectId, rootId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for root ${rootId}: ${message}`);
-    }
-}
-
 // -- op -----------------------------------------------------------------------
 
 export async function createContext(
@@ -122,60 +86,57 @@ export async function createContext(
         }
     }
 
-    // create root node
+    // DATA-001: root + initial head + forked copies go out as ONE insertNodes
+    // call. Previously a crash between the three writes left partial contexts
+    // (a root with no version head, or a head with no messages). As a single
+    // statement the whole create either lands or it doesn't.
     const rootId = generatePublicId('context');
-    const rootRows = await storage.insertNodes({
-        public_id: rootId,
-        project_id: projectId,
-        type: 'context',
-        context_id: null,
-        parent_id: from ?? null,
-        content: {},
-        metadata: (metadata ?? {}) as Record<string, unknown>,
-    });
-    const root = firstRow(rootRows);
-    if (!root) return err('internal', 'Failed to create context');
-
-    // create initial head
     const headId = generatePublicId('context');
+
+    const insertRecords =
+        sourceNodes.length > 0
+            ? buildNodeInsertRecords(
+                  sourceNodes.map((n) => ({
+                      type: 'message',
+                      content: n.content,
+                      metadata: n.metadata,
+                      parent_id: n.public_id,
+                  })),
+                  projectId,
+                  headId,
+                  null,
+              )
+            : [];
+
+    let root;
     try {
-        await storage.insertNodes({
-            public_id: headId,
-            project_id: projectId,
-            type: 'context',
-            context_id: rootId,
-            prev_id: null,
-            content: {},
-            metadata: { operation: 'create' },
-        });
+        const rows = await storage.insertNodes([
+            {
+                public_id: rootId,
+                project_id: projectId,
+                type: 'context',
+                context_id: null,
+                parent_id: from ?? null,
+                content: {},
+                metadata: (metadata ?? {}) as Record<string, unknown>,
+            },
+            {
+                public_id: headId,
+                project_id: projectId,
+                type: 'context',
+                context_id: rootId,
+                prev_id: null,
+                content: {},
+                metadata: { operation: 'create', child_count: insertRecords.length },
+            },
+            ...insertRecords,
+        ]);
+        root = rows.find((r) => r.public_id === rootId);
     } catch {
-        // head failed — roll back the orphaned root, swallowing rollback errors
-        try {
-            await storage.deleteNodeByPublicId(projectId, rootId);
-        } catch (rollbackError) {
-            const message = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-            console.error(`Rollback failed for root ${rootId}: ${message}`);
-        }
+        // stable message — the raw driver error is not useful to the caller
         return err('internal', 'Failed to create context');
     }
-
-    // copy source nodes if forking
-    if (sourceNodes.length > 0) {
-        const nodeInputs = sourceNodes.map((n) => ({
-            type: 'message',
-            content: n.content,
-            metadata: n.metadata,
-            parent_id: n.public_id,
-        }));
-        const insertRecords = buildNodeInsertRecords(nodeInputs, projectId, headId, null);
-        try {
-            await storage.insertNodes(insertRecords);
-        } catch {
-            // copy failed — roll back root + head together
-            await rollbackRootContext(storage, projectId, rootId, headId);
-            return err('internal', 'Failed to copy source context');
-        }
-    }
+    if (!root) return err('internal', 'Failed to create context');
 
     return ok({
         id: root.public_id!,

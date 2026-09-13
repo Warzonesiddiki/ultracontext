@@ -253,6 +253,11 @@ export class DrizzleAdapter implements StorageAdapter {
         await this.db.delete(projects).where(eq(projects.id, id));
     }
 
+    async listProjects() {
+        const rows = await this.db.select({ id: projects.id }).from(projects);
+        return rows.map((r) => ({ id: r.id }));
+    }
+
     // -- transactions ---------------------------------------------------------
 
     async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>, options?: TransactionOptions): Promise<T> {

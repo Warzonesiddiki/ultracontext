@@ -180,6 +180,11 @@ export class MemoryStorage implements StorageAdapter {
 
     async deleteProject(_id: number) {}
 
+    async listProjects() {
+        // projectSeq is a monotonic 1..N counter — every id in range exists
+        return Array.from({ length: this.projectSeq }, (_, i) => ({ id: i + 1 }));
+    }
+
     async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>, _options?: unknown): Promise<T> {
         return fn(this);
     }

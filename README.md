@@ -275,6 +275,10 @@ ultracontext gc --keep 6mo --dry-run   # preview only, delete nothing
 - **Snapshots are safe even while the server is running** — they use SQLite's
   online backup API and are `integrity_check`-verified before being reported.
   The 10 newest are kept automatically (`--keep` to change).
+- **Writes are all-or-nothing.** Every version update lands as a single
+  database statement, so a crash mid-update can never leave a broken version
+  behind — the chain stays consistent either way (and the server heals any
+  damage older versions of the code may have left).
 - **Restore is protected.** The current database is saved as
   `pre-restore-<timestamp>.sqlite` before anything is replaced, and restore
   refuses to run while the local server is running (`--force` overrides).

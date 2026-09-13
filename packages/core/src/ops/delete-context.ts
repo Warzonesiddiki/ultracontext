@@ -11,8 +11,14 @@ import { ok, err, type Result } from '../result';
 async function permanentlyDelete(storage: StorageAdapter, projectId: number, rootPublicId: string) {
     const branches = await storage.findContextBranches(rootPublicId);
 
-    // Per branch: batch-clear parent refs for its messages, then delete them
+    // DATA-001: delete each version head BEFORE its messages. A crash mid-
+    // delete then leaves at worst a gap in the version chain (reads fall back
+    // to created_at order) plus unreferenced message rows — never an
+    // orphaned head (a head with no children that a read would surface as a
+    // phantom empty version). On transactional backends the whole function
+    // still runs inside one transaction, so this ordering is invisible there.
     for (const branch of branches) {
+        await storage.deleteNodeByPublicId(projectId, branch.public_id);
         const messages = await storage.findNonContextNodes(branch.public_id);
         const msgIds = messages.map((m) => m.public_id);
         await storage.clearParentReferencesBulk(projectId, msgIds);

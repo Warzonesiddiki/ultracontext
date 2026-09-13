@@ -362,20 +362,16 @@ describe('deleteMessages — version-control semantics', () => {
         assert.equal(storage.getNodesByPublicId(secondId)!.prev_id, firstId);
     });
 
-    it('rolls back the new head when inserting filtered copies fails (internal)', async () => {
+    it('returns internal when the version statement fails — no new head exists', async () => {
         const { storage, projectId, rootId } = await setup([
             { role: 'user', content: 'a' },
             { role: 'assistant', content: 'b' },
         ]);
 
-        // make the second insertNodes call (the filtered copies) throw
-        const original = storage.insertNodes.bind(storage);
-        let calls = 0;
-        (storage as any).insertNodes = async (values: any) => {
-            calls += 1;
-            // first call = version head (allow), subsequent = filtered copies (fail)
-            if (calls >= 2) throw new Error('boom');
-            return original(values);
+        // DATA-001: head + survivors are one statement; failing it leaves the
+        // previous head intact (no new head to roll back)
+        (storage as any).insertNodes = async () => {
+            throw new Error('boom');
         };
 
         const result = await deleteMessages(storage, projectId, rootId, { ids: [0] });
@@ -384,7 +380,7 @@ describe('deleteMessages — version-control semantics', () => {
         if (result.ok) return;
         assert.equal(result.code, 'internal');
 
-        // the orphaned delete head was rolled back
+        // no delete head was created — the chain is exactly as before
         const deleteHead = storage
             .getAllNodes()
             .find((n) => n.type === 'context' && n.context_id === rootId && (n.metadata as any).operation === 'delete');

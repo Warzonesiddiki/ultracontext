@@ -22,6 +22,7 @@ import { createApp } from './app';
 import { createStorageAdapter } from '@ultracontext/storage';
 import { createKey } from '@ultracontext/core';
 import { MemoryRateLimiter } from './rate-limit/memory';
+import { repairAllProjects } from './repair';
 
 // -- paths --------------------------------------------------------------------
 
@@ -113,6 +114,12 @@ async function main() {
     }
 
     const storage = await createStorageAdapter(config);
+
+    // DATA-001: heal version chains damaged by crashes of older code (an
+    // orphaned head or a headless root). Current ops are single-statement and
+    // can't create these states; this covers legacy databases on upgrade.
+    // Best effort — a repair failure must not block startup.
+    await repairAllProjects(storage).catch(() => undefined);
 
     // 3 — first run: make a project + API key so this is usable immediately
     let apiKey = state.apiKey as string | undefined;

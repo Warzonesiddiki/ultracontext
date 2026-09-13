@@ -75,6 +75,9 @@ export type { DeleteMessagesParams } from './ops/delete-messages';
 export { deleteManyContexts } from './ops/delete-many';
 export type { DeleteResult, DeleteManyResult } from './ops/delete-many';
 
+export { repairOrphanedHeads } from './ops/repair-orphaned-heads';
+export type { RepairReport } from './ops/repair-orphaned-heads';
+
 export { createKey } from './ops/create-key';
 
 export { verifyKey, verifyKeyHash, hashToken } from './ops/verify-key';

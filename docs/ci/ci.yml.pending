@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    name: JS — check, test, build, bins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck + syntax check (all packages with a check script)
+        run: pnpm check
+
+      - name: js-sdk typecheck (no check script of its own)
+        run: cd apps/js-sdk && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
+
+      - name: Test all packages
+        run: |
+          for p in packages/core packages/storage packages/parsers apps/sync apps/api apps/js-sdk apps/mcp-server; do
+            echo "::group::▶ $p"
+            (cd "$p" && pnpm run test)
+            echo "::endgroup::"
+          done
+
+      - name: Build
+        run: |
+          (cd apps/js-sdk && pnpm run build)
+          (cd apps/mcp-server && pnpm run build)
+
+      - name: Verify every declared bin path exists
+        run: node scripts/ci/verify-bins.mjs
+
+  python:
+    name: Python — pytest + mypy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: pip install -e "apps/python-sdk[dev]"
+
+      - name: pytest
+        run: cd apps/python-sdk && pytest -q
+
+      - name: mypy (strict)
+        run: mypy apps/python-sdk/ultracontext

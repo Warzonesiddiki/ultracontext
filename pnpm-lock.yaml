@@ -103,6 +103,9 @@ importers:
       '@types/node':
         specifier: ^22.18.6
         version: 22.19.11
+      tsdown:
+        specifier: ^0.20.3
+        version: 0.20.3(typescript@5.9.3)
       tsx:
         specifier: ^4.20.5
         version: 4.21.0

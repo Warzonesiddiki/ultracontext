@@ -165,10 +165,10 @@ const T = [
  file:"packages/parsers/tests/writers/claude.test.mjs:97",
  d:"assert.ok(entry.message.content.includes(\"[system]\")) compares an ARRAY of {type,text} objects against a string — always false. The production code is correct; the assertion is wrong. The suite is currently red (68/69).",
  acc:"`pnpm --filter @ultracontext/parsers test` exits 0 (69/69)."},
-{id:"CI-001",sev:"P2",ph:1,eff:"M",area:"CI/DX",t:"Add pull-request CI",
- file:".github/workflows/ (new ci.yml)",
- d:"The only workflow is publish.yml (release → npm/PyPI). Nothing runs on PRs. CI would have caught the currently-failing parsers test.",
- acc:"CI is required to merge: install → pnpm check → all 6 test suites → pytest + mypy → build → verify every declared bin path exists."},
+{id:"CI-001",sev:"P2",ph:1,eff:"M",area:"CI/DX",t:"Add pull-request CI — SHIPPED (workflow file pending App 'workflows' permission)",
+ file:".github/workflows/ci.yml · scripts/ci/verify-bins.mjs · apps/python-sdk/tests/test_client.py",
+ d:"DONE (workflow promotion pending an admin permission). Everything CI runs is built and verified green locally: JS job (pnpm install --frozen-lockfile → pnpm check → js-sdk tsc → test all 7 packages → build js-sdk + mcp-server → scripts/ci/verify-bins.mjs) and Python job (pip install -e 'apps/python-sdk[dev]' → pytest → mypy strict). The workflow file itself could not be committed: the connected GitHub App lacks the 'workflows' permission, so pushes touching .github/workflows/ are rejected — the ready-to-promote workflow is stored at docs/ci/ci.yml.pending (also staged untracked at .github/workflows/ci.yml in the workspace). Three fixes made so CI is green on day one: (1) mcp-server's declared bin dist/stdio.js did not exist and its 'build' script was a no-op (tsx --help || true) — now a real tsdown bundle (dist/stdio.mjs, shebang, externals = npm deps) and the bin path updated; verified by piping an MCP initialize request through the built file; (2) python-sdk had no tests — added tests/test_client.py (20 offline tests, httpx mocked) + pytest config; (3) mypy strict had 14 errors in client.py (params no-redef + Optional indexed-assignment) — fixed. Promotion steps: grant the App 'workflows' permission → copy docs/ci/ci.yml.pending to .github/workflows/ci.yml → commit+push → add branch protection on main (required status check = the CI job names).",
+ acc:"CI is required to merge: install → pnpm check → all 6 test suites → pytest + mypy → build → verify every declared bin path exists — all steps implemented and verified green locally; workflow file promotion blocked only on the GitHub App 'workflows' permission (admin action)."},
 
 /* ── PHASE 2 ─────────────────────────────────────────────────────── */
 {id:"DATA-004",sev:"P1",ph:2,eff:"L",area:"Data",t:"Introduce migration tooling",

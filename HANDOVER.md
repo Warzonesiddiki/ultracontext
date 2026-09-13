@@ -195,6 +195,34 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
 - 2 new unit tests (js-sdk 48 → 50) cover fresh-write 0600/0700 and
   re-locking a pre-existing 0644 config.
 
+### CI-001 — pull-request CI (shipped last in this thread)
+
+- CI design + all supporting code shipped: JS job (`pnpm install
+  --frozen-lockfile` → `pnpm check` → js-sdk tsc → test all 7 packages →
+  build js-sdk + mcp-server → `scripts/ci/verify-bins.mjs`) and Python job
+  (`pip install -e "apps/python-sdk[dev]"` → pytest → mypy strict).
+- **The workflow file itself is blocked:** the GitHub App connected to this
+  repo lacks the `workflows` permission, so commits touching
+  `.github/workflows/` are rejected on push. The ready-to-promote workflow
+  lives at `docs/ci/ci.yml.pending` (also untracked at
+  `.github/workflows/ci.yml` in this workspace) — once the owner grants
+  `workflows` permission to the App, copy it into place, commit, push.
+- **Fixes made so CI is green on day one:**
+  1. mcp-server's bin `./dist/stdio.js` **did not exist** and its build
+     script was a no-op (`tsx --help || true`). Now a real tsdown bundle:
+     `apps/mcp-server/tsdown.config.ts` → `dist/stdio.mjs` (shebang,
+     externals = @modelcontextprotocol/*, ultracontext, zod); `bin` updated
+     to `./dist/stdio.mjs`. Verified by piping an MCP `initialize` JSON-RPC
+     request through the built file (proper `serverInfo` reply).
+  2. python-sdk had **no tests** — added `apps/python-sdk/tests/test_client.py`
+     (20 offline tests, httpx mocked; URL/header/body/error/validation
+     coverage, sync + async) + `[tool.pytest.ini_options] asyncio_mode=auto`.
+  3. `mypy --strict` had 14 errors in `client.py` (params `no-redef`,
+     `Optional` indexed-assignment in `get`/`delete`, sync + async) — fixed.
+- **Still open (admin actions):** promote `docs/ci/ci.yml.pending` (needs
+  `workflows` permission) + branch protection on main (required status
+  check = the CI job names).
+
 ---
 ## 2. Test + typecheck baseline (current)
 
@@ -206,8 +234,9 @@ apps/js-sdk           50 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server
 apps/sync             10 pass / 0 fail
 apps/api              49 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests)
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
+apps/python-sdk       20 pass / 0 fail   (NEW in CI-001: tests/test_client.py) + mypy strict clean
 ────────────────────────────────────
-total                428 pass / 0 fail
+total                448 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -229,12 +258,16 @@ appending one freebuff message appended **1** (incremental).
 ## 3. What is still open (board)
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
-(interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-004 SHIPPED
-this thread), `README-REALITY-CHECK.md`.
+(interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-004,
+CI-001 SHIPPED this thread), `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
-- **CI-001** (no CI), **DATA-004/DATA-001**, **PROM-003** (switch docs + Linux/Windows).
+- **DATA-004/DATA-001**, **PROM-003** (switch docs + Linux/Windows).
+- **CI promotion (admin actions):** grant `workflows` permission to the
+  connected GitHub App → copy `docs/ci/ci.yml.pending` to
+  `.github/workflows/ci.yml` → branch protection on main (required status
+  check = the CI job names).
 - **More harnesses** — the user said "all harness use to use ai". Candidates not
   yet covered: Amp, Cline, Roo Code, Kilo Code, Windsurf, Zed, Aider, Goose,
   Crush, Droid/Factory, Continue, pi. Recipe below; **verify paths first**.
@@ -270,8 +303,22 @@ Next highest-value (plus the open-ended harness list):
 ## 5. Environment gotchas (each cost real time)
 
 - **`pnpm` vanishes from PATH between turns — always `corepack pnpm`.**
-  Root `pnpm check` runs `pnpm -r` and fails with `sh: pnpm: not found`;
-  run `corepack pnpm check` **per package**.
+  Root `pnpm check` runs `pnpm -r` and fails with `sh: pnpm: not found`
+  (corepack's shim is not in PATH for pnpm's own child processes) — run the
+  check scripts **per package**. On GitHub CI, `pnpm/action-setup` puts
+  `pnpm` on PATH, so root `pnpm check` works there.
+- **The sandbox can reset the local branch to the base commit mid-work**
+  (happened again during CI-001): remote stays the source of truth.
+  Recovery: `git fetch origin`, restore missing files with
+  `git checkout <remote-sha> -- <paths>`, then
+  `git reset --mixed <remote-sha>` and re-commit the real delta. Untracked
+  files (HANDOVER.md etc.) can also get reverted — re-verify content after
+  any weird `git status`.
+- **mcp-server runs from a built bundle:** `ultracontext-mcp` bin =
+  `dist/stdio.mjs` (tsdown; config in `tsdown.config.ts`). Rebuild with
+  `pnpm --filter ultracontext-mcp-server run build` after touching
+  `apps/mcp-server/src` — and build js-sdk first (`ultracontext` is a
+  workspace dep resolved from its dist).
 - `apps/js-sdk` has **no** `check` script → `./node_modules/.bin/tsc --noEmit -p tsconfig.json`.
   `apps/mcp-server` has 3 pre-existing `TS2307` errors (unresolved workspace
   types) — expect them.

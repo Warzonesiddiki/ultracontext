@@ -12,7 +12,9 @@ and local — all features, no paywall, no telemetry, no network dependency.
 **FREE-006 (`ultracontext backup` + `ultracontext gc`)**, then
 **FREE-007 (local-first daemon + MCP — the offline loop)**, then
 **PROM-002 (version on append — the git model)** and **SEC-002 (CORS
-allowlist)** — see the notes below the table.
+allowlist)**, then SEC-004, CI-001, DATA-004, DATA-001, and **PROM-003
+(`ultracontext switch` documented + cross-platform terminal launch +
+`--dry-run`)** — see the notes below the table.
 
 UltraContext now ingests **9** sources, up from 6:
 
@@ -294,6 +296,50 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   `assert.equal('ok' in result, false)` is always false — Result always has
   the key — use `result.ok === false`.
 
+### PROM-003 — document switch + Linux/Windows launch + --dry-run (shipped last in this thread)
+
+- **The gap:** `ultracontext switch` (the headline example — "Codex, grab
+  the last plan Claude Code made") had ZERO mentions in the README or docs
+  site, and `openInNewTab()` was darwin-only (Ghostty/iTerm2/Terminal.app
+  AppleScript). Linux/Windows users got a bare "please run ..." line.
+- **Documentation:**
+  - `README.md` — new "Hand off between agents — ultracontext switch"
+    section after the Agent integrations notes: headline example, all
+    flags (`--last`, `--session`, `--no-launch`, `--dry-run`), what happens
+    (parse → write → launch), and the per-platform terminal support note.
+  - Docs site (Mintlify) — new `apps/docs/guides/switch-agents.mdx` guide
+    (registered in `docs.json` navigation between fork-clone-contexts and
+    self-hosting) + one line in the `cli.mdx` command list.
+- **Cross-platform launch** (`apps/js-sdk/src/cli/switch.mjs`):
+  - **Linux:** detect a running emulator via `TERM_PROGRAM` first, else a
+    PATH probe, over kitty → Alacritty → WezTerm → foot → Konsole → GNOME
+    Terminal → xfce4-terminal → xterm. Opens a NEW window/tab running
+    `sh -c "cd <cwd> && codex fork <id> -C <cwd>"` (per-emulator flags;
+    e.g. `kitty --type=window`, `gnome-terminal --new-window`, `xterm -e`).
+  - **Windows:** prefer Windows Terminal (`wt` — probes PATH +
+    System32/WindowsPowerShell), else a fresh `powershell.exe -NoExit`.
+    Commands are quoted for PowerShell with the new `powershellQuote()`
+    (single quotes, `''` escaping — the existing POSIX `shellQuote` is not
+    PowerShell-safe).
+  - No launcher found on any platform → the pre-existing fallback prints
+    the exact command to run. macOS paths (Ghostty/iTerm2/Terminal.app)
+    unchanged.
+- **`--dry-run`:** parse-only — uses `readLocalSession()` from
+  `@ultracontext/parsers` (no writer, no launch) and prints From (source +
+  file), To, message count (honours `--last` capping), the working
+  directory recovered from the session, and the command that WOULD run.
+  Writes nothing — asserted by an end-to-end test that snapshots the fake
+  `$HOME` before/after.
+- **17 new tests** (`apps/js-sdk/tests/cli/switch.test.mjs`, 50 → 67):
+  `powershellQuote` cases, PATH lookup, terminal discovery order
+  (TERM_PROGRAM preference + fallbacks), Windows `wt`/PowerShell
+  fallback, `--dry-run` flag parsing, and 2 CLI end-to-end dry-run tests
+  that spawn `ultracontext.mjs` against a fake `$HOME` with a real
+  claude JSONL.
+- **Live E2E verified:** dry-run preview (correct From/To/count/cwd) and a
+  real `--no-launch` run writing a valid codex rollout
+  (`~/.codex/sessions/<date>/rollout-….jsonl` with `session_meta`).
+
 ---
 ## 2. Test + typecheck baseline (current)
 
@@ -301,13 +347,13 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
 packages/core        206 pass / 0 fail   (was 191; +5 PROM-002, +10 DATA-001 crash-consistency)
 packages/storage      32 pass / 0 fail   (was 20; +12 DATA-004 migrations)
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
-apps/js-sdk           50 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server, +2 SEC-004 perms)
+apps/js-sdk           67 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server, +2 SEC-004 perms, +17 PROM-003 switch)
 apps/sync             10 pass / 0 fail
 apps/api              49 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests)
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 apps/python-sdk       20 pass / 0 fail   (NEW in CI-001: tests/test_client.py) + mypy strict clean
 ────────────────────────────────────
-total                470 pass / 0 fail
+total                487 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -330,12 +376,13 @@ appending one freebuff message appended **1** (incremental).
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
 (interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-004,
-CI-001, DATA-004, DATA-001 SHIPPED this thread), `README-REALITY-CHECK.md`.
+CI-001, DATA-004, DATA-001, PROM-003 SHIPPED this thread),
+`README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
-- **PROM-003** (document `switch` + Linux/Windows support), then the
-  harness candidates.
+- The harness candidates (Amp, Cline, Roo Code, Kilo Code, Windsurf, Zed,
+  Aider, Goose, Crush, Droid/Factory, Continue, pi).
 - **CI promotion (admin actions):** grant `workflows` permission to the
   connected GitHub App → copy `docs/ci/ci.yml.pending` to
   `.github/workflows/ci.yml` → branch protection on main (required status

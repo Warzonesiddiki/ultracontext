@@ -41,6 +41,7 @@
                             "guides/edit-contexts",
                             "guides/view-context-history",
                             "guides/fork-clone-contexts",
+                            "guides/switch-agents",
                             "guides/self-hosting"
                         ]
                     }

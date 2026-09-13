@@ -188,6 +188,39 @@ Notes:
 - opencode reads its database **read-only** — it never locks or modifies the
   file, even while opencode is running.
 
+### Hand off between agents — `ultracontext switch`
+
+Your agent's full working context is portable: switch picks up a session from
+one agent and continues it in another. The headline example — *"Codex, grab
+the last plan Claude Code made"* — is one command:
+
+```bash
+ultracontext switch codex              # latest Claude Code session → new Codex session
+ultracontext switch claude             # latest Codex session → new Claude Code session
+ultracontext switch codex --last 50    # carry over only the last 50 messages
+ultracontext switch codex --session /path/to/session.jsonl
+ultracontext switch codex --dry-run    # preview what carries over — writes nothing
+ultracontext switch codex --no-launch  # print JSON (session id, file, count) for scripting
+```
+
+What happens:
+
+1. The source agent's latest session (or `--session` / `--last N` of it) is
+   parsed from its on-disk store.
+2. A fresh target session file is written (new session id, same working
+   directory) with the carried-over messages.
+3. The target agent launches in a new terminal tab/window with the session
+   loaded (`codex fork <id> -C <cwd>` on macOS, Linux, and Windows), or the
+   command is printed for you to run.
+
+`--dry-run` parses and shows the source file, destination, message count and
+working directory without writing or launching anything.
+
+Writers exist for `claude` and `codex` only (the other sources are
+ingest-only); terminal auto-launch covers Ghostty/iTerm2/Terminal on macOS,
+common Linux emulators (kitty, Alacritty, WezTerm, foot, Konsole,
+GNOME Terminal, xfce4-terminal, xterm), and Windows Terminal / PowerShell.
+
 ## Context API
 
 For builders who want to go deeper. Git-like primitives for context engineering.

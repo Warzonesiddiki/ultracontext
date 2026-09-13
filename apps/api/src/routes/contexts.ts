@@ -8,14 +8,25 @@ import {
     getProjectActivity,
     isPlainObject,
     listContexts,
+    parseLimit,
     resultStatus,
     updateMessages,
     searchMessages,
     type ContextFilters,
     type ErrorCode,
 } from '@ultracontext/core';
+import type { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import type { HttpApp } from '../types/http';
+import type { AppEnv, HttpApp } from '../types/http';
+
+// -- request-body ceiling ------------------------------------------------------
+// 8 MiB: far beyond any legitimate single message (agent file pastes top out
+// around a few hundred KB) yet below what a runaway/malicious JSON body can
+// hold in memory. The sync daemon bulk-appends in batches of 50, so the cap
+// must stay comfortably above ~50 messages worth of content.
+const MAX_JSON_BODY_BYTES = 8 * 1024 * 1024;
+const jsonBodyLimit = bodyLimit({ maxSize: MAX_JSON_BODY_BYTES });
 
 // -- error status (core code -> Hono-typed HTTP status) -----------------------
 
@@ -39,7 +50,11 @@ export function registerContextRoutes(app: HttpApp) {
     app.get('/contexts', async (c) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
-        const limit = parseInt(c.req.query('limit') ?? '20');
+        // strict parse: ?limit=abc → 400 (not NaN into .limit()); out-of-range
+        // is clamped into [1, 100]; absent → default 20
+        const rawLimit = c.req.query('limit');
+        const limit = rawLimit === undefined ? 20 : parseLimit(rawLimit, 1, 100);
+        if (limit === null) return c.json({ error: 'limit must be a positive integer' }, 400);
 
         // metadata + timestamp filters
         const filters: ContextFilters & { limit?: number } = { limit };
@@ -156,12 +171,16 @@ export function registerContextRoutes(app: HttpApp) {
 
     // -- parameterized :id routes ------------------------------------------------
 
+    // The minimal HttpApp type doesn't express route-level middleware; the
+    // real Hono instance (createApp returns Hono<AppEnv>) does.
+    const hono = app as unknown as Hono<AppEnv>;
+
     // append messages — parse JSON body (no catch, matches prior behavior)
-    app.post('/contexts/:id', async (c) => {
+    hono.post('/contexts/:id', jsonBodyLimit, async (c) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
-        const body = await c.req.json();
+        const body = (await c.req.json()) as object | object[];
 
         const result = await appendMessages(storage, projectId, contextPublicId, body);
         if (!result.ok) return c.json({ error: result.message }, status(result.code));
@@ -187,15 +206,23 @@ export function registerContextRoutes(app: HttpApp) {
     });
 
     // update messages — parse JSON body (null on bad JSON -> 400), call core
-    app.patch('/contexts/:id', async (c) => {
+    hono.patch('/contexts/:id', jsonBodyLimit, async (c) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
-        const body = await c.req.json().catch(() => null);
 
-        if (body === null) return c.json({ error: 'Invalid JSON body' }, 400);
+        // bad JSON → 400, but a body-limit error must propagate: the
+        // jsonBodyLimit middleware converts it into the 413 after next().
+        let body: unknown;
+        try {
+            body = await c.req.json();
+        } catch (error) {
+            if (error instanceof Error && error.name === 'BodyLimitError') throw error;
+            return c.json({ error: 'Invalid JSON body' }, 400);
+        }
+        if (body === null || body === undefined) return c.json({ error: 'Invalid JSON body' }, 400);
 
-        const result = await updateMessages(storage, projectId, contextPublicId, body);
+        const result = await updateMessages(storage, projectId, contextPublicId, body as object);
         if (!result.ok) return c.json({ error: result.message }, status(result.code));
         return c.json(result.data);
     });

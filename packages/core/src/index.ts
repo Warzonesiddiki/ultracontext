@@ -100,7 +100,7 @@ export { KEY_PREFIX_LEN, MAX_BATCH_DELETE } from './constants';
 
 // -- request parsing ----------------------------------------------------------
 
-export { isPlainObject, parseUpdateRequestBody } from './request-parsing';
+export { isPlainObject, parseUpdateRequestBody, parseIndex, parseLimit } from './request-parsing';
 export type { UpdateRequestInput } from './request-parsing';
 
 // -- first row ----------------------------------------------------------------

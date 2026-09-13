@@ -7,6 +7,7 @@ import type { StorageAdapter, NodeRow } from '../storage';
 import { buildNodeInsertRecords, findHead, getOrderedNodes, getVersions } from '../context-chain';
 import { generatePublicId } from '../public-ids';
 import { firstRow } from '../first-row';
+import { parseIndex } from '../request-parsing';
 import { ok, err, type Result } from '../result';
 
 // -- input --------------------------------------------------------------------
@@ -55,8 +56,9 @@ export async function createContext(
         const versions = await getVersions(storage, from);
 
         if (version !== undefined) {
-            const versionNum = parseInt(String(version));
-            if (isNaN(versionNum) || versionNum < 0 || versionNum >= versions.length) {
+            const versionNum = parseIndex(version);
+            if (versionNum === null) return err('invalid_input', 'Invalid version');
+            if (versionNum < 0 || versionNum >= versions.length) {
                 return err('not_found', 'Version not found');
             }
             sourceHead = { public_id: versions[versionNum].head_id };
@@ -77,8 +79,8 @@ export async function createContext(
             }
 
             if (at !== undefined) {
-                const idx = parseInt(String(at));
-                if (isNaN(idx) || idx < 0 || idx >= sourceNodes.length) {
+                const idx = parseIndex(at);
+                if (idx === null || idx < 0 || idx >= sourceNodes.length) {
                     return err('invalid_input', 'Invalid index');
                 }
                 sourceNodes = sourceNodes.slice(0, idx + 1);

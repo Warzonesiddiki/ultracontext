@@ -207,16 +207,18 @@ describe('getContext', () => {
         assert.equal(result.message, 'Version not found');
     });
 
-    it('returns not_found for a non-numeric version (NaN)', async () => {
+    it('returns invalid_input for a malformed version (API-002: no parseInt leaks)', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
         const { rootId } = await seedContext(storage, project!.id, { messages: [{ text: 'v0' }] });
 
-        const result = await getContext(storage, project!.id, rootId, { version: 'abc' });
-
-        assert.equal(result.ok, false);
-        assert.equal(result.code, 'not_found');
-        assert.equal(result.message, 'Version not found');
+        // 'abc' used to resolve via NaN-handling; malformed selectors must be
+        // rejected (400), never silently resolved to a real version.
+        for (const bad of ['abc', '1abc', '1.9', ' 1 ']) {
+            const result = await getContext(storage, project!.id, rootId, { version: bad });
+            assert.equal(result.ok, false, `should reject ${JSON.stringify(bad)}`);
+            if (!result.ok) assert.equal(result.code, 'invalid_input');
+        }
     });
 
     // -- before (timestamp) selection ------------------------------------------

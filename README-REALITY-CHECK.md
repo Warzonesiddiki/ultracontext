@@ -160,15 +160,18 @@ team-oriented MCP tool — an agent has to know to filter by `user_id`.
 
 ---
 
-## 5 · "Auto-ingest Claude Code, Codex, and OpenClaw" ⚠️ (under-claim)
+## 5 · "Auto-ingest Claude Code, Codex, and OpenClaw" ✅ (fixed 2026-09-11)
 
-You ingest **six** sources (`daemon.mjs:509-537`):
+You ingest **nine** sources (`buildSources()` in `daemon.mjs`):
 
-`codex` · `claude` · `openclaw` · `cursor` · `gemini` · `gstack`
+`codex` · `claude` · `openclaw` · `cursor` · `gemini` · `gstack` · `opencode` · `agy` (Antigravity) · `freebuff`
 
-Cursor and Gemini are real differentiators — nobody else has them. They're invisible in the README.
-
-**Fix:** update the feature table. Cheapest credibility win available.
+The README now has a dedicated **Agent integrations** section listing every
+source, its on-disk location, and its `INGEST_<NAME>` toggle — and it states
+honestly that `ultracontext switch` only writes back to claude and codex.
+opencode (SQLite DB, read-only) and Antigravity are real differentiators; the
+opencode + Antigravity + Freebuff paths were all verified against on-disk
+reality (source trees / official docs) before the parsers were written.
 
 ---
 

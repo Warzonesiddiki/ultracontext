@@ -103,6 +103,9 @@ importers:
       '@types/node':
         specifier: ^22.18.6
         version: 22.19.11
+      tsdown:
+        specifier: ^0.20.3
+        version: 0.20.3(typescript@5.9.3)
       tsx:
         specifier: ^4.20.5
         version: 4.21.0
@@ -134,8 +137,8 @@ importers:
         specifier: ^19.2.4
         version: 19.2.4
       ultracontext:
-        specifier: ^1.0.1
-        version: 1.0.2
+        specifier: workspace:*
+        version: link:../js-sdk
 
   packages/core:
     devDependencies:
@@ -1835,10 +1838,6 @@ packages:
     engines: {node: '>=14.17'}
     hasBin: true
 
-  ultracontext@1.0.2:
-    resolution: {integrity: sha512-TuEzz1o85Qbt8Qt5VWR/59Z/16+PWl5lNgK4pCC4Zhy/QvphKEPWW4rpvxGifvvRRyl22TeLBM8Injt7hjA5QA==}
-    engines: {node: '>=18'}
-
   unconfig-core@7.5.0:
     resolution: {integrity: sha512-Su3FauozOGP44ZmKdHy2oE6LPjk51M/TRRjHv2HNCWiDvfvCoxC2lno6jevMA91MYAdCdwP05QnWdWpSbncX/w==}
 
@@ -3460,8 +3459,6 @@ snapshots:
       mime-types: 3.0.2
 
   typescript@5.9.3: {}
-
-  ultracontext@1.0.2: {}
 
   unconfig-core@7.5.0:
     dependencies:

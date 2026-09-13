@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { aggregateActivity } from '@ultracontext/core';
 import type { ActivityAggregateInput } from '@ultracontext/core';
 
@@ -52,6 +52,17 @@ export class SupabaseAdapter implements StorageAdapter {
             .from('nodes')
             .select('*')
             .eq('context_id', contextId)
+            .neq('type', 'context');
+        if (error) throw error;
+        return (data ?? []) as NodeRow[];
+    }
+
+    async findNonContextNodesByContextIds(contextIds: string[]): Promise<NodeRow[]> {
+        if (contextIds.length === 0) return [];
+        const { data, error } = await this.client
+            .from('nodes')
+            .select('*')
+            .in('context_id', contextIds)
             .neq('type', 'context');
         if (error) throw error;
         return (data ?? []) as NodeRow[];
@@ -296,6 +307,43 @@ export class SupabaseAdapter implements StorageAdapter {
         if (error) throw error;
     }
 
+    // key lifecycle — listing never selects key_hash
+
+    private static readonly KEY_COLUMNS = 'id, project_id, key_prefix, name, created_at, last_used_at';
+
+    async listApiKeys(projectId: number): Promise<ApiKeyPublic[]> {
+        const { data, error } = await this.client
+            .from('api_keys')
+            .select(SupabaseAdapter.KEY_COLUMNS)
+            .eq('project_id', projectId)
+            .order('id');
+        if (error) throw error;
+        return data as ApiKeyPublic[];
+    }
+
+    async findApiKey(id: number): Promise<ApiKeyPublic | null> {
+        const { data, error } = await this.client
+            .from('api_keys')
+            .select(SupabaseAdapter.KEY_COLUMNS)
+            .eq('id', id)
+            .limit(1)
+            .single();
+        if (error && error.code === 'PGRST116') return null;
+        if (error) throw error;
+        return data as ApiKeyPublic;
+    }
+
+    // PostgREST cannot report "no rows deleted" without a representation
+    // round-trip, so check existence first. Two calls for an admin-only
+    // operation is an acceptable trade for an honest boolean.
+    async deleteApiKey(id: number): Promise<boolean> {
+        const existing = await this.findApiKey(id);
+        if (!existing) return false;
+        const { error } = await this.client.from('api_keys').delete().eq('id', id);
+        if (error) throw error;
+        return true;
+    }
+
     // -- projects -------------------------------------------------------------
 
     async insertProject(name: string): Promise<ProjectRow | null> {
@@ -313,10 +361,23 @@ export class SupabaseAdapter implements StorageAdapter {
         if (error) throw error;
     }
 
+    async listProjects() {
+        const { data, error } = await this.client.from('projects').select('id');
+        if (error) throw error;
+        return (data ?? []).map((row) => ({ id: Number(row.id) }));
+    }
+
     // -- transactions ---------------------------------------------------------
 
-    // Supabase REST lacks multi-statement tx + isolation levels. Runs inline;
-    // partial failures + race conditions possible. Options arg accepted for API parity.
+    // Supabase REST (PostgREST) has no multi-statement transactions and no
+    // isolation levels, so this runs inline. That is SAFE today because every
+    // version write in the core ops is a SINGLE insertNodes call — one SQL
+    // statement — so a version's head and children can never commit
+    // separately (DATA-001). Remaining known limitation: two CONCURRENT
+    // writers on the same context can both commit (each sees the other's
+    // head as a sibling branch); reads degrade gracefully (versions stay
+    // listed, HEAD = newest) but last-write-wins applies. The isolationLevel
+    // option is accepted for API parity and intentionally ignored.
     async transaction<T>(fn: (tx: StorageAdapter) => Promise<T>, _options?: TransactionOptions): Promise<T> {
         return fn(this);
     }

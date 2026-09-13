@@ -4,6 +4,7 @@
 
 import { KEY_PREFIX_LEN } from '../constants';
 import { hashKey } from '../api-keys';
+import { secretsEqual } from '../secrets';
 import type { StorageAdapter } from '../storage';
 
 // -- result shape -------------------------------------------------------------
@@ -21,10 +22,11 @@ export async function hashToken(token: string): Promise<{ prefix: string; hash: 
 // -- verifyKeyHash ------------------------------------------------------------
 
 // resolve a precomputed prefix+hash to its key/project — no row or hash
-// mismatch means no match.
+// mismatch means no match. The hash comparison is constant-time: stored
+// key hashes are secret material, so a wrong guess must not cost less.
 export async function verifyKeyHash(storage: StorageAdapter, prefix: string, hash: string): Promise<VerifiedKey | null> {
     const tokenRow = await storage.findApiKeyByPrefix(prefix);
-    if (!tokenRow || hash !== tokenRow.key_hash) return null;
+    if (!tokenRow || !secretsEqual(hash, tokenRow.key_hash)) return null;
 
     return { apiKeyId: tokenRow.id, projectId: tokenRow.project_id };
 }

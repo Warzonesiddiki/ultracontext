@@ -17,7 +17,7 @@ export async function getContextMessages(
     const head = await findHead(storage, root.public_id);
     if (!head) return { data: [] };
 
-    const orderedNodes = await getOrderedNodes(storage, head.public_id);
+    const orderedNodes = await getOrderedNodes(storage, root.public_id, head.public_id);
 
     return {
         data: orderedNodes.map((n: any, index: number) => ({

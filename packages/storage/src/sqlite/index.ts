@@ -2,9 +2,10 @@ import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-or
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
 import { createClient } from '@libsql/client';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { searchableText } from '@ultracontext/core';
-import { schema, nodes, api_keys, projects, SCHEMA_SQL } from './schema';
+import { schema, nodes, api_keys, projects } from './schema';
+import { migrateSqlite } from '../migrations/sqlite';
 
 // =============================================================================
 // SQLITE ADAPTER — local-first StorageAdapter over libsql (file or :memory:)
@@ -54,10 +55,17 @@ export function normalizeSqliteUrl(input: string): string {
 
 // -- client + schema bootstrap ------------------------------------------------
 
-// open a libsql client (url: 'file:/path/uc.db' or ':memory:'), apply DDL once
+// open a libsql client (url: 'file:/path/uc.db' or ':memory:'), run pending
+// migrations (idempotent; stamps schema_migrations)
 export async function createSqliteAdapter(url: string): Promise<SqliteAdapter> {
     const client = createClient({ url: normalizeSqliteUrl(url) });
-    await client.executeMultiple(SCHEMA_SQL);
+    // Foreign keys are OFF by default in SQLite — without this, the
+    // ON DELETE CASCADE constraints (migration 0002) are decorative and
+    // deleting a project would orphan its keys and nodes. Must be set per
+    // connection before any other statement; the migration rebuild (0002)
+    // is written to run safely with enforcement on.
+    await client.execute('PRAGMA foreign_keys = ON');
+    await migrateSqlite(client);
     return new SqliteAdapter(drizzle(client, { schema }));
 }
 
@@ -116,6 +124,14 @@ export class SqliteAdapter implements StorageAdapter {
             .select()
             .from(nodes)
             .where(and(eq(nodes.context_id, contextId), ne(nodes.type, 'context'))) as Promise<NodeRow[]>;
+    }
+
+    async findNonContextNodesByContextIds(contextIds: string[]): Promise<NodeRow[]> {
+        if (contextIds.length === 0) return [];
+        return this.db
+            .select()
+            .from(nodes)
+            .where(and(inArray(nodes.context_id, contextIds), ne(nodes.type, 'context'))) as Promise<NodeRow[]>;
     }
 
     async findRootContext(projectId: number, publicId: string) {
@@ -316,6 +332,39 @@ export class SqliteAdapter implements StorageAdapter {
             .where(eq(api_keys.id, id));
     }
 
+    // key lifecycle — listing never selects key_hash
+    private static keyColumns = {
+        id: api_keys.id,
+        project_id: api_keys.project_id,
+        key_prefix: api_keys.key_prefix,
+        name: api_keys.name,
+        created_at: api_keys.created_at,
+        last_used_at: api_keys.last_used_at,
+    };
+
+    async listApiKeys(projectId: number): Promise<ApiKeyPublic[]> {
+        const rows = await this.db
+            .select(SqliteAdapter.keyColumns)
+            .from(api_keys)
+            .where(eq(api_keys.project_id, projectId))
+            .orderBy(api_keys.id);
+        return rows as ApiKeyPublic[];
+    }
+
+    async findApiKey(id: number): Promise<ApiKeyPublic | null> {
+        const rows = await this.db
+            .select(SqliteAdapter.keyColumns)
+            .from(api_keys)
+            .where(eq(api_keys.id, id))
+            .limit(1);
+        return (rows[0] as ApiKeyPublic) ?? null;
+    }
+
+    async deleteApiKey(id: number): Promise<boolean> {
+        const rows = await this.db.delete(api_keys).where(eq(api_keys.id, id)).returning({ id: api_keys.id });
+        return rows.length > 0;
+    }
+
     // -- projects -------------------------------------------------------------
 
     async insertProject(name: string): Promise<ProjectRow | null> {
@@ -324,7 +373,16 @@ export class SqliteAdapter implements StorageAdapter {
     }
 
     async deleteProject(id: number) {
+        // CASCADE (PRAGMA foreign_keys = ON, migration 0002) removes the
+        // project's api_keys and nodes; nodes_fts has no cascade, so its
+        // rows are removed explicitly or they leak forever.
+        await this.db.run(sql`DELETE FROM nodes_fts WHERE project_id = ${id}`);
         await this.db.delete(projects).where(eq(projects.id, id));
+    }
+
+    async listProjects() {
+        const rows = await this.db.select({ id: projects.id }).from(projects);
+        return rows.map((r) => ({ id: r.id }));
     }
 
     // -- transactions ---------------------------------------------------------

@@ -16,8 +16,8 @@ export const projects = sqliteTable('projects', {
 
 export const api_keys = sqliteTable('api_keys', {
     id: integer('id').primaryKey({ autoIncrement: true }),
-    project_id: integer('project_id').notNull(),
-    key_prefix: text('key_prefix').notNull(),
+    project_id: integer('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    key_prefix: text('key_prefix').notNull().unique(),
     key_hash: text('key_hash').notNull(),
     name: text('name'),
     last_used_at: text('last_used_at'),
@@ -26,8 +26,8 @@ export const api_keys = sqliteTable('api_keys', {
 
 export const nodes = sqliteTable('nodes', {
     id: integer('id').primaryKey({ autoIncrement: true }),
-    public_id: text('public_id').notNull(),
-    project_id: integer('project_id').notNull(),
+    public_id: text('public_id').notNull().unique(),
+    project_id: integer('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
     type: text('type').notNull(),
     content: text('content', { mode: 'json' }).$type<Record<string, unknown>>().notNull().$defaultFn(() => ({})),
     metadata: text('metadata', { mode: 'json' }).$type<Record<string, unknown>>().notNull().$defaultFn(() => ({})),
@@ -39,7 +39,11 @@ export const nodes = sqliteTable('nodes', {
 
 export const schema = { projects, api_keys, nodes };
 
-// DDL applied on first open (no migration tooling yet — local file or :memory:)
+// DDL applied on first open — superseded by the migration tooling
+// (../migrations/0001_init.ts + 0002 are the canonical baseline). Kept as an
+// export for compatibility; new code should go through migrateSqlite().
+// Matches the post-0002 database: UNIQUE constraints, FK ON DELETE CASCADE
+// (callers must run PRAGMA foreign_keys = ON for the cascade to apply).
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,8 +53,8 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL,
-    key_prefix TEXT NOT NULL,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    key_prefix TEXT NOT NULL UNIQUE,
     key_hash TEXT NOT NULL,
     name TEXT,
     last_used_at TEXT,
@@ -58,8 +62,8 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 CREATE TABLE IF NOT EXISTS nodes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    public_id TEXT NOT NULL,
-    project_id INTEGER NOT NULL,
+    public_id TEXT NOT NULL UNIQUE,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     type TEXT NOT NULL,
     content TEXT NOT NULL DEFAULT '{}',
     metadata TEXT NOT NULL DEFAULT '{}',
@@ -70,6 +74,7 @@ CREATE TABLE IF NOT EXISTS nodes (
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_context_id ON nodes(context_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_project_type ON nodes(project_id, type);
+CREATE INDEX IF NOT EXISTS idx_api_keys_project_id ON api_keys(project_id);
 
 -- Full-text search index over message nodes (not version heads).
 -- Search is a free, first-class capability — there is no quota and no paywall.

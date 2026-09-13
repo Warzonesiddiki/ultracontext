@@ -7,11 +7,12 @@
         ".": "./src/index.ts",
         "./drizzle": "./src/drizzle.ts",
         "./supabase": "./src/supabase.ts",
-        "./sqlite": "./src/sqlite/index.ts"
+        "./sqlite": "./src/sqlite/index.ts",
+        "./migrations": "./src/migrations/index.ts"
     },
     "scripts": {
         "check": "tsc --noEmit",
-        "test": "node --import tsx --test src/**/*.test.ts"
+        "test": "node --import tsx --test \"src/*.test.ts\" \"src/*/*.test.ts\""
     },
     "dependencies": {
         "@libsql/client": "^0.17.3",

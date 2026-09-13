@@ -1,0 +1,87 @@
+---
+title: 'Switch Between Agents'
+description: 'Hand a session from one AI coding agent to another — with its full context'
+---
+
+## Guide Overview
+
+After this guide, you'll be able to:
+
+-   Continue a Claude Code session inside Codex (or the other way round)
+-   Carry over just the recent part of a long conversation
+-   Preview exactly what will transfer before anything is written
+
+## Why switch agents?
+
+Every agent has its strengths. Claude Code is great for exploring a large
+codebase. Codex is great for long autonomous runs. Gemini has different
+tools. But their contexts are silos — when you switch, the new agent starts
+from zero and you re-explain everything.
+
+`ultracontext switch` breaks the silo. It reads the source agent's session
+straight from its on-disk store, writes a fresh session file for the target
+agent with the same working directory, and launches it — so the new agent
+picks up exactly where the old one left off.
+
+## The headline example
+
+*"Codex, grab the last plan Claude Code made."*
+
+```bash
+ultracontext switch codex
+```
+
+That's it. The latest Claude Code session in your current directory becomes
+a new Codex session, and Codex opens in a new terminal tab already on it.
+
+## Commands
+
+```bash
+ultracontext switch codex              # latest Claude Code session → Codex
+ultracontext switch claude             # latest Codex session → Claude Code
+ultracontext switch codex --last 50    # carry over only the last 50 messages
+ultracontext switch codex --session /path/to/session.jsonl
+ultracontext switch codex --dry-run    # preview — writes nothing, launches nothing
+ultracontext switch codex --no-launch  # print JSON for scripting
+```
+
+### Options
+
+| Flag | What it does |
+| --- | --- |
+| `--last N` | Only the final `N` messages are carried over (good for very long sessions) |
+| `--session <path>` | Use a specific session file instead of the latest |
+| `--dry-run` | Parse and show the source file, destination, message count and working directory — nothing is written or launched |
+| `--no-launch` | Write the session but don't open a terminal; print `{sessionId, filePath, messageCount}` as JSON |
+
+### What happens under the hood
+
+1.  **Parse.** The source session file is read and normalized (user +
+    assistant messages; the original working directory is recovered from the
+    session's metadata).
+2.  **Write.** A new session file for the target agent is created with a
+    fresh session id, in the source session's working directory. Existing
+    files are never modified or deleted.
+3.  **Launch.** The target agent opens in a new terminal tab or window with
+    the session loaded. On macOS it drives Ghostty, iTerm2 and Terminal.app
+    directly; on Linux it detects kitty, Alacritty, WezTerm, foot, Konsole,
+    GNOME Terminal, xfce4-terminal or xterm; on Windows it uses Windows
+    Terminal (or a fresh PowerShell console). If no launcher is found, the
+    exact command is printed for you to run.
+
+## Supported pairs
+
+Session writers exist for **Claude Code** and **Codex** today, so switch
+supports `claude ↔ codex`. The other ingested sources (Cursor, Gemini,
+opencode, Antigravity, Freebuff, gstack) are read and searchable through the
+rest of UltraContext but cannot be written back to yet.
+
+## Try it safely first
+
+```bash
+ultracontext switch codex --dry-run
+```
+
+The dry run shows the source session file, how many messages would carry
+over, the target working directory and the exact command that would be
+launched — and changes nothing.

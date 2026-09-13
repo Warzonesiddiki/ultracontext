@@ -72,7 +72,7 @@ describe('createContext', () => {
         const head = await findHead(storage, result.data.id);
         assert.ok(head);
         const headNode = storage.getNodesByPublicId(head!.public_id);
-        assert.deepEqual(headNode!.metadata, { operation: 'create' });
+        assert.deepEqual(headNode!.metadata, { operation: 'create', child_count: 0 });
     });
 
     it('stores provided metadata on the root node', async () => {
@@ -180,7 +180,7 @@ describe('createContext', () => {
 
         // copied nodes match source content, in order, parented to the source nodes
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.equal(copied.length, 2);
         assert.deepEqual(copied.map((n) => n.content), [
             { role: 'user', text: 'a' },
@@ -201,7 +201,7 @@ describe('createContext', () => {
 
         // new head exists but holds no message nodes
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.equal(copied.length, 0);
     });
 
@@ -220,7 +220,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'v0-msg' }]);
     });
 
@@ -236,7 +236,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'v1-msg-a' }, { text: 'v1-msg-b' }]);
     });
 
@@ -268,17 +268,17 @@ describe('createContext', () => {
         }
     });
 
-    it('returns not_found for a non-numeric version', async () => {
+    it('returns invalid_input for a malformed version (API-002: no parseInt leaks)', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
         const seed = await seedContext(storage, project!.id, { messages: [{ text: 'm' }] });
 
-        const result = await createContext(storage, project!.id, { from: seed.rootId, version: 'abc' });
-
-        assert.equal(result.ok, false);
-        if (!result.ok) {
-            assert.equal(result.code, 'not_found');
-            assert.equal(result.message, 'Version not found');
+        // 'abc' used to resolve via NaN-handling; malformed selectors must be
+        // rejected (400), never silently resolved to a real version.
+        for (const bad of ['abc', '1abc', '1.9', ' 1 ']) {
+            const result = await createContext(storage, project!.id, { from: seed.rootId, version: bad });
+            assert.equal(result.ok, false, `should reject ${JSON.stringify(bad)}`);
+            if (!result.ok) assert.equal(result.code, 'invalid_input');
         }
     });
 
@@ -296,7 +296,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'm0' }]);
     });
 
@@ -345,7 +345,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'm0' }, { text: 'm1' }]);
     });
 
@@ -360,7 +360,7 @@ describe('createContext', () => {
         if (!result.ok) return;
 
         const head = await findHead(storage, result.data.id);
-        const copied = await getOrderedNodes(storage, head!.public_id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
         assert.deepEqual(copied.map((n) => n.content), [{ text: 'm0' }]);
     });
 
@@ -406,21 +406,20 @@ describe('createContext', () => {
         }
     });
 
-    // -- rollback on head-creation failure ------------------------------------
-    // If the initial head insert fails, the orphaned root must be removed and
+    // -- single-statement create failure (DATA-001) ---------------------------
+    // root + head + copies are one statement: a failure means nothing landed.
+    // (previously a separate head insert could fail and orphan the root)
     // an internal error returned.
 
-    it('rolls back the root and returns internal when head creation fails', async () => {
+    it('returns internal when the create statement fails — nothing is written', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
 
-        // fail the SECOND insertNodes call (the head), letting the root insert succeed
-        let calls = 0;
-        const original = storage.insertNodes.bind(storage);
-        storage.insertNodes = (async (values: any) => {
-            calls += 1;
-            if (calls === 2) throw new Error('boom');
-            return original(values);
+        // DATA-001: root + head + copies are one statement. A failed statement
+        // means the whole create failed — there is no partial state to roll
+        // back (and no separate head step to fail).
+        storage.insertNodes = (async () => {
+            throw new Error('boom');
         }) as typeof storage.insertNodes;
 
         const result = await createContext(storage, project!.id, {});
@@ -431,27 +430,27 @@ describe('createContext', () => {
             assert.equal(result.message, 'Failed to create context');
         }
 
-        // the orphaned root node was rolled back
+        // nothing landed: no root, no head, no messages
+        assert.equal(storage.getAllNodes().length, 0);
         const roots = storage.getAllNodes().filter((n) => n.type === 'context' && n.context_id === null);
         assert.equal(roots.length, 0);
     });
 
-    // -- rollback on source-copy failure --------------------------------------
-    // If copying forked nodes fails, root + head must be rolled back and an
+    // -- single-statement fork failure (DATA-001) -----------------------------
+    // the forked root + head + copies are one statement: a failure means the
+    // source is untouched and nothing new landed
     // internal error returned.
 
-    it('rolls back root and head and returns internal when copying source nodes fails', async () => {
+    it('returns internal when the fork statement fails — only the seed remains', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
         const seed = await seedContext(storage, project!.id, { messages: [{ text: 'm0' }] });
 
-        // count inserts AFTER the seed; fail the copy-nodes insert (root, head, copy => 3rd)
-        let calls = 0;
-        const original = storage.insertNodes.bind(storage);
-        storage.insertNodes = (async (values: any) => {
-            calls += 1;
-            if (calls === 3) throw new Error('boom');
-            return original(values);
+        // DATA-001: the fork (root + head + copies) is one statement; failing
+        // it leaves the seeded source untouched and writes nothing new.
+        const nodesBefore = storage.getAllNodes().length;
+        storage.insertNodes = (async () => {
+            throw new Error('boom');
         }) as typeof storage.insertNodes;
 
         const result = await createContext(storage, project!.id, { from: seed.rootId });
@@ -459,10 +458,11 @@ describe('createContext', () => {
         assert.equal(result.ok, false);
         if (!result.ok) {
             assert.equal(result.code, 'internal');
-            assert.equal(result.message, 'Failed to copy source context');
+            assert.equal(result.message, 'Failed to create context');
         }
 
-        // only the original seeded root remains — the forked root was rolled back
+        // only the original seeded root remains — the fork never landed
+        assert.equal(storage.getAllNodes().length, nodesBefore);
         const roots = storage.getAllNodes().filter((n) => n.type === 'context' && n.context_id === null);
         assert.deepEqual(roots.map((r) => r.public_id), [seed.rootId]);
     });

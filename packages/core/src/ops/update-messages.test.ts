@@ -365,17 +365,15 @@ describe('updateMessages — version-control semantics', () => {
     });
 });
 
-describe('updateMessages — rollback on insert failure (internal)', () => {
-    it('rolls back the new head and returns internal when copying nodes fails', async () => {
+describe('updateMessages — insert failure (internal)', () => {
+    it('returns internal when the version statement fails — no new head exists', async () => {
         const { storage, projectId, seed } = await setup([{ role: 'user', text: 'a' }]);
 
-        // force the message-copy insertNodes call to throw (the head insert is a single object)
-        const original = storage.insertNodes.bind(storage);
-        let calls = 0;
-        (storage as any).insertNodes = async (values: any) => {
-            calls += 1;
-            if (Array.isArray(values)) throw new Error('boom');
-            return original(values);
+        // DATA-001: head + copies are one statement (one array insert);
+        // failing it leaves the previous head intact — there is no orphaned
+        // head to roll back.
+        (storage as any).insertNodes = async () => {
+            throw new Error('boom');
         };
 
         const result = await updateMessages(storage, projectId, seed.rootId, {
@@ -385,10 +383,8 @@ describe('updateMessages — rollback on insert failure (internal)', () => {
         assert.equal(result.ok, false);
         if (result.ok) return;
         assert.equal(result.code, 'internal');
-        assert.equal(result.message, 'Failed to update messages');
 
-        // restore + assert the orphaned head was rolled back (no stray update head remains)
-        (storage as any).insertNodes = original;
+        // no update head was created — the chain is exactly as before
         const updateHead = storage
             .getAllNodes()
             .find((n) => n.type === 'context' && n.context_id === seed.rootId && (n.metadata as any).operation === 'update');

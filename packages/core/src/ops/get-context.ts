@@ -5,6 +5,7 @@
 
 import { findHead, getOrderedNodes, getVersions } from '../context-chain';
 import type { MessageView } from '../message-view';
+import { parseIndex } from '../request-parsing';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
 
@@ -22,7 +23,7 @@ export type GetContextOptions = {
 type VersionEntry = {
     version: number;
     created_at: string;
-    operation: 'create' | 'update' | 'delete';
+    operation: 'create' | 'append' | 'update' | 'delete';
     affected: string[] | null;
     metadata?: Record<string, unknown>;
 };
@@ -58,8 +59,9 @@ export async function getContext(
 
     // select the head: explicit version → before timestamp → latest
     if (opts.version !== undefined) {
-        const versionNum = parseInt(String(opts.version));
-        if (isNaN(versionNum) || versionNum < 0 || versionNum >= versions.length) {
+        const versionNum = parseIndex(opts.version);
+        if (versionNum === null) return err('invalid_input', 'Invalid version');
+        if (versionNum < 0 || versionNum >= versions.length) {
             return err('not_found', 'Version not found');
         }
         head = { public_id: versions[versionNum].head_id };
@@ -78,7 +80,7 @@ export async function getContext(
     if (!head) return ok({ data: [], version: 0 });
 
     // ordered messages under the head, optionally filtered by the before cutoff
-    let orderedNodes = await getOrderedNodes(storage, head.public_id);
+    let orderedNodes = await getOrderedNodes(storage, root.public_id, head.public_id);
     if (beforeTs !== undefined) {
         orderedNodes = orderedNodes.filter((n) => new Date(n.created_at).getTime() <= beforeTs!);
     }
@@ -96,14 +98,15 @@ export async function getContext(
 
     // at slices messages up to and including the index, re-indexed from 0
     if (opts.at !== undefined) {
-        const idx = parseInt(String(opts.at));
-        if (isNaN(idx) || idx < 0) return err('invalid_input', 'Invalid index');
+        const idx = parseIndex(opts.at);
+        if (idx === null || idx < 0) return err('invalid_input', 'Invalid index');
         if (idx >= orderedNodes.length) return err('not_found', 'Index out of range');
 
         const sliced = orderedNodes.slice(0, idx + 1).map((n: any, i: number) => ({
             ...n.content,
             id: n.public_id,
             index: i,
+            created_at: n.created_at,
             metadata: n.metadata,
         }));
         return ok({ data: sliced, version: currentVersion, ...(versionsResponse && { versions: versionsResponse }) });
@@ -114,6 +117,9 @@ export async function getContext(
         ...n.content,
         id: n.public_id,
         index,
+        // wall-clock creation time — lets clients discover ?before= targets
+        // and render when-each-message-arrived without extra round-trips
+        created_at: n.created_at,
         metadata: n.metadata,
     }));
 

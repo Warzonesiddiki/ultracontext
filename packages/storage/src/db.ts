@@ -3,6 +3,8 @@ import { drizzle, type PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { bigint, bigserial, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import postgres, { type Sql } from 'postgres';
 
+import { migratePostgres } from './migrations/postgres';
+
 const GLOBAL_DB_REGISTRY_KEY = '__ultracontextPgRegistry';
 
 export const projects = pgTable('projects', {
@@ -63,7 +65,7 @@ function resolveDbRegistry(): DbRegistry {
     return globalWithRegistry[GLOBAL_DB_REGISTRY_KEY]!;
 }
 
-export function createDbClient(databaseUrl: string): ApiDb {
+export async function createDbClient(databaseUrl: string): Promise<ApiDb> {
     const registry = resolveDbRegistry();
     const existingDb = registry.databases.get(databaseUrl);
     if (existingDb) return existingDb;
@@ -74,6 +76,10 @@ export function createDbClient(databaseUrl: string): ApiDb {
         idle_timeout: 20,
         connect_timeout: 10,
     });
+
+    // self-hosted Postgres auto-migrates on connect (idempotent, tracked in
+    // schema_migrations; Supabase deployments use apps/postgres/init.sql)
+    await migratePostgres(sqlClient);
 
     const db = drizzle(sqlClient, { schema });
     registry.clients.set(databaseUrl, sqlClient);

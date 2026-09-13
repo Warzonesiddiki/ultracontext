@@ -17,25 +17,6 @@ export type DeleteMessagesParams = {
     userMetadata?: Record<string, unknown>;
 };
 
-// -- rollback helper ----------------------------------------------------------
-// Drop an orphaned version head (and any children) after a failed copy step.
-
-async function rollbackHead(storage: StorageAdapter, projectId: number, headId: string) {
-    try {
-        await storage.deleteNodesByContextId(projectId, headId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for children of head ${headId}: ${message}`);
-    }
-
-    try {
-        await storage.deleteNodeByPublicId(projectId, headId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for head ${headId}: ${message}`);
-    }
-}
-
 // -- op -----------------------------------------------------------------------
 
 export async function deleteMessages(
@@ -75,7 +56,7 @@ export async function deleteMessages(
     if (!currentHead) return err('internal', 'HEAD not found');
 
     // load the ordered messages under the current head
-    const orderedNodes = await getOrderedNodes(storage, currentHead.public_id);
+    const orderedNodes = await getOrderedNodes(storage, root.public_id, currentHead.public_id);
     const nodeIds = new Set(orderedNodes.map((n) => n.public_id));
 
     // resolve each target to a concrete message public id
@@ -93,29 +74,13 @@ export async function deleteMessages(
     }
     const deleteSet = new Set(idsToDelete);
 
-    // create new version head
-    const newHeadId = generatePublicId('context');
-    try {
-        await storage.insertNodes({
-            public_id: newHeadId,
-            project_id: projectId,
-            type: 'context',
-            context_id: root.public_id,
-            prev_id: currentHead.public_id,
-            content: {},
-            metadata: { operation: 'delete', affected: idsToDelete, ...(userMetadata ?? {}) },
-        });
-    } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to create version head';
-        return err('internal', message);
-    }
-
     // build filtered node copies (copy-on-write of the survivors)
+    const newHeadId = generatePublicId('context');
     const filtered = orderedNodes.filter((n) => !deleteSet.has(n.public_id));
     const newNodes = filtered.map((n) => ({
         public_id: generatePublicId('msg'),
         project_id: projectId,
-        type: 'message',
+        type: 'message' as const,
         context_id: newHeadId,
         parent_id: n.public_id,
         prev_id: null as string | null,
@@ -128,24 +93,38 @@ export async function deleteMessages(
         newNodes[i].prev_id = newNodes[i - 1].public_id;
     }
 
-    // persist the survivors, rolling back the orphaned head on failure
-    if (newNodes.length > 0) {
-        try {
-            await storage.insertNodes(newNodes);
-        } catch {
-            await rollbackHead(storage, projectId, newHeadId);
-            return err('internal', 'Failed to delete messages');
-        }
+    // DATA-001: head + survivors go out as ONE insertNodes call, so the new
+    // version can never commit half-way (child_count: 0 is legitimate here —
+    // a delete-all produces an empty version; the repair pass only touches
+    // heads whose marker says children were expected).
+    const headRecord = {
+        public_id: newHeadId,
+        project_id: projectId,
+        type: 'context' as const,
+        context_id: root.public_id,
+        prev_id: currentHead.public_id,
+        content: {},
+        metadata: { operation: 'delete', affected: idsToDelete, child_count: newNodes.length, ...(userMetadata ?? {}) },
+    };
+    let created: Awaited<ReturnType<typeof storage.insertNodes>>;
+    try {
+        created = await storage.insertNodes([headRecord, ...newNodes]);
+    } catch {
+        // stable message — the raw driver error is not useful to the caller
+        return err('internal', 'Failed to delete messages');
     }
 
     // recompute the current version after the delete head landed
     const versions = await getVersions(storage, root.public_id);
     const currentVersion = versions.length - 1;
-    const result: MessageView[] = newNodes.map((n, index: number) => ({
+    // created rows carry the wall-clock created_at the adapters stamped
+    // on insert (PROM-001)
+    const result: MessageView[] = created.filter((n) => n.public_id !== headRecord.public_id).map((n, index: number) => ({
         ...n.content,
-        id: n.public_id,
+        id: n.public_id!,
         index,
-        metadata: n.metadata,
+        created_at: n.created_at!,
+        metadata: n.metadata ?? {},
     }));
 
     return ok({ data: result, version: currentVersion });

@@ -7,6 +7,9 @@ export { parseCodexLine } from "./agents/codex.mjs";
 export { parseOpenClawLine } from "./agents/openclaw.mjs";
 export { parseCursorLine } from "./agents/cursor.mjs";
 export { parseGeminiFile, extractGeminiTextContent } from "./agents/gemini.mjs";
+export { parseOpencodeFile, parseOpencodeLegacyMessage } from "./agents/opencode.mjs";
+export { parseAgyLine } from "./agents/agy.mjs";
+export { parseFreebuffFile } from "./agents/freebuff.mjs";
 
 // tool artifact parsers
 export { parseGstackLine } from "./gstack.mjs";

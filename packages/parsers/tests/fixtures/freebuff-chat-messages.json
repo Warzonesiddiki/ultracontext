@@ -1,0 +1,33 @@
+[
+  {
+    "id": "m1",
+    "variant": "user",
+    "content": "Make the deploy script idempotent",
+    "timestamp": "2026-09-10T09:15:00.000Z"
+  },
+  {
+    "id": "m2",
+    "variant": "ai",
+    "content": "I'll read the deploy script and add an idempotency check.",
+    "blocks": [
+      { "type": "text", "content": "I'll read the deploy script and add an idempotency check.", "textType": "text" },
+      { "type": "text", "content": "The script re-runs migrations unconditionally on every deploy.", "textType": "reasoning" },
+      { "type": "tool", "toolCallId": "t1", "toolName": "bash", "input": { "command": "cat deploy.sh" }, "output": "#!/bin/bash\npsql -f migrate.sql\nsystemctl restart api" }
+    ],
+    "timestamp": "2026-09-10T09:15:30.000Z",
+    "isComplete": true
+  },
+  {
+    "id": "m3",
+    "variant": "agent",
+    "content": "Sub-agent finished: updated deploy.sh with a lock-file check so a second run is a no-op.",
+    "timestamp": "2026-09-10T09:16:02.000Z",
+    "agent": { "agentName": "deploy-fixer", "agentType": "code", "responseCount": 2 }
+  },
+  {
+    "id": "m4",
+    "variant": "user",
+    "content": "Great, also handle the case where the lock file is stale",
+    "timestamp": "2026-09-10T09:17:00.000Z"
+  }
+]

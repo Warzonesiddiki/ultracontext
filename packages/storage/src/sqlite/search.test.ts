@@ -32,11 +32,16 @@ function daemonMessage(text: string, meta: Record<string, unknown> = {}) {
     return { role: 'assistant', content: { message: text, event_type: 'message' }, metadata: meta };
 }
 
-async function seed(storage: StorageAdapter, projectId: number, texts: string[]) {
+async function seed(storage: StorageAdapter, texts: string[]) {
+    // Owns its project: with FK enforcement on (migration 0002 +
+    // PRAGMA foreign_keys), a node referencing a missing project correctly
+    // fails now — the old hard-coded ids 1/2 relied on that gap.
+    const project = await storage.insertProject('test');
+    const projectId = project!.id;
     const ctx = await createContext(storage, projectId, { metadata: { source: 'claude' } });
     if (!ctx.ok) throw new Error('seed failed: ' + ctx.message);
     await appendMessages(storage, projectId, ctx.data.id, texts.map((t) => daemonMessage(t, { source: 'claude', user_id: 'alice' })));
-    return ctx.data.id;
+    return { projectId, ctxId: ctx.data.id };
 }
 
 describe('toFtsQuery — input escaping', () => {
@@ -70,9 +75,9 @@ describe('toFtsQuery — input escaping', () => {
 describe('SqliteAdapter — full-text search', () => {
     it('indexes messages on append and finds them', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        await seed(storage, 1, ['we decided to refactor the auth middleware', 'unrelated chatter']);
+        const { projectId } = await seed(storage, ['we decided to refactor the auth middleware', 'unrelated chatter']);
 
-        const res = await searchMessages(storage, 1, { query: 'refactor' });
+        const res = await searchMessages(storage, projectId, { query: 'refactor' });
         assert.ok(res.ok, res.ok ? '' : res.message);
         if (!res.ok) return;
 
@@ -82,30 +87,30 @@ describe('SqliteAdapter — full-text search', () => {
 
     it('stems words (porter tokenizer): "refactor" matches "refactoring"', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        await seed(storage, 1, ['we are refactoring the parser today']);
+        const { projectId } = await seed(storage, ['we are refactoring the parser today']);
 
-        const res = await searchMessages(storage, 1, { query: 'refactor' });
+        const res = await searchMessages(storage, projectId, { query: 'refactor' });
         assert.ok(res.ok);
         if (res.ok) assert.equal(res.data.data.length, 1);
     });
 
     it('supports prefix / typeahead matching', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        await seed(storage, 1, ['implemented the authentication layer']);
+        const { projectId } = await seed(storage, ['implemented the authentication layer']);
 
-        const res = await searchMessages(storage, 1, { query: 'auth' });
+        const res = await searchMessages(storage, projectId, { query: 'auth' });
         assert.ok(res.ok);
         if (res.ok) assert.equal(res.data.data.length, 1);
     });
 
     it('ranks the better match first', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        await seed(storage, 1, [
+        const { projectId } = await seed(storage, [
             'refactor mentioned once in passing',
             'refactor refactor refactor the whole thing',
         ]);
 
-        const res = await searchMessages(storage, 1, { query: 'refactor' });
+        const res = await searchMessages(storage, projectId, { query: 'refactor' });
         assert.ok(res.ok);
         if (!res.ok) return;
 
@@ -116,32 +121,34 @@ describe('SqliteAdapter — full-text search', () => {
 
     it('filters by metadata and time range', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        const ctx = await createContext(storage, 1, {});
+        const project = await storage.insertProject('test');
+        const projectId = project!.id;
+        const ctx = await createContext(storage, projectId, {});
         if (!ctx.ok) throw new Error('seed failed: ' + ctx.message);
-        await appendMessages(storage, 1, ctx.data.id, [
+        await appendMessages(storage, projectId, ctx.data.id, [
             daemonMessage('the claude plan', { source: 'claude' }),
             daemonMessage('the codex plan', { source: 'codex' }),
         ]);
 
-        const claude = await searchMessages(storage, 1, { query: 'plan', source: 'claude' });
+        const claude = await searchMessages(storage, projectId, { query: 'plan', source: 'claude' });
         assert.ok(claude.ok);
         if (claude.ok) {
             assert.equal(claude.data.data.length, 1);
             assert.equal(claude.data.data[0].metadata.source, 'claude');
         }
 
-        const future = await searchMessages(storage, 1, { query: 'plan', after: '2099-01-01T00:00:00Z' });
+        const future = await searchMessages(storage, projectId, { query: 'plan', after: '2099-01-01T00:00:00Z' });
         assert.ok(future.ok);
         if (future.ok) assert.equal(future.data.data.length, 0);
     });
 
     it('scopes results to the project (tenant isolation)', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        await seed(storage, 1, ['project one secret plan']);
-        await seed(storage, 2, ['project two secret plan']);
+        const oneP = await seed(storage, ['project one secret plan']);
+        const twoP = await seed(storage, ['project two secret plan']);
 
-        const one = await searchMessages(storage, 1, { query: 'secret' });
-        const two = await searchMessages(storage, 2, { query: 'secret' });
+        const one = await searchMessages(storage, oneP.projectId, { query: 'secret' });
+        const two = await searchMessages(storage, twoP.projectId, { query: 'secret' });
 
         assert.ok(one.ok && two.ok);
         if (!one.ok || !two.ok) return;
@@ -154,29 +161,29 @@ describe('SqliteAdapter — full-text search', () => {
 
     it('survives hostile FTS5 syntax without throwing', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        await seed(storage, 1, ['a normal message about plans']);
+        const { projectId } = await seed(storage, ['a normal message about plans']);
 
         for (const hostile of ['"', 'plan OR', 'NEAR(a b)', '*', '((', 'plan"', 'a AND NOT b', '-']) {
-            const res = await searchMessages(storage, 1, { query: hostile });
+            const res = await searchMessages(storage, projectId, { query: hostile });
             assert.ok(res.ok, `query ${JSON.stringify(hostile)} should not error`);
         }
     });
 
     it('removes index entries when the context is deleted', async () => {
         const storage = await createSqliteAdapter(tmpDbUrl());
-        const ctxId = await seed(storage, 1, ['delete me entirely']);
+        const { projectId, ctxId } = await seed(storage, ['delete me entirely']);
 
-        const before = await searchMessages(storage, 1, { query: 'entirely' });
+        const before = await searchMessages(storage, projectId, { query: 'entirely' });
         assert.ok(before.ok && before.data.data.length === 1);
 
         // wipe every node under the root, mirroring a permanent delete.
         // Branches must be read BEFORE the heads are deleted.
         const branches = await storage.findContextBranches(ctxId);
-        for (const branch of branches) await storage.deleteNodesByContextId(1, branch.public_id);
-        await storage.deleteNodesByContextId(1, ctxId);
-        await storage.deleteNodeByPublicId(1, ctxId);
+        for (const branch of branches) await storage.deleteNodesByContextId(projectId, branch.public_id);
+        await storage.deleteNodesByContextId(projectId, ctxId);
+        await storage.deleteNodeByPublicId(projectId, ctxId);
 
-        const after = await searchMessages(storage, 1, { query: 'entirely' });
+        const after = await searchMessages(storage, projectId, { query: 'entirely' });
         assert.ok(after.ok);
         if (after.ok) assert.equal(after.data.data.length, 0);
     });

@@ -9,7 +9,7 @@ export type UltraContextConfig = {
 export type Version = {
     version: number;
     created_at: string;
-    operation: 'create' | 'update' | 'delete';
+    operation: 'create' | 'append' | 'update' | 'delete';
     affected: string[] | null;
     metadata?: Record<string, unknown>;
 };

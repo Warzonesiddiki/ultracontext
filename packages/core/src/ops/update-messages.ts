@@ -10,26 +10,6 @@ import { isPlainObject, parseUpdateRequestBody } from '../request-parsing';
 import type { MessageView } from '../message-view';
 import { ok, err, type Result } from '../result';
 
-// -- rollback helper ----------------------------------------------------------
-// Best-effort cleanup of an orphaned version head and its children, swallowing
-// any rollback errors (mirrors the route's rollbackHead).
-
-async function rollbackHead(storage: StorageAdapter, projectId: number, headId: string) {
-    try {
-        await storage.deleteNodesByContextId(projectId, headId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for children of head ${headId}: ${message}`);
-    }
-
-    try {
-        await storage.deleteNodeByPublicId(projectId, headId);
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Rollback failed for head ${headId}: ${message}`);
-    }
-}
-
 // -- op -----------------------------------------------------------------------
 
 export async function updateMessages(
@@ -66,7 +46,7 @@ export async function updateMessages(
     if (!currentHead) return err('internal', 'HEAD not found');
 
     // load current messages, indexed by public id for lookup
-    const orderedNodes = await getOrderedNodes(storage, currentHead.public_id);
+    const orderedNodes = await getOrderedNodes(storage, root.public_id, currentHead.public_id);
     const nodeIds = new Set(orderedNodes.map((n) => n.public_id));
 
     // resolve each update's selector (id or index) to a concrete target id
@@ -91,31 +71,15 @@ export async function updateMessages(
     const updateMap = new Map(resolvedUpdates.map((u) => [u.id, u]));
     const affectedIds = resolvedUpdates.map((u) => u.id);
 
-    // create new version head — failure -> internal, preserving thrown message
-    const newHeadId = generatePublicId('context');
-    try {
-        await storage.insertNodes({
-            public_id: newHeadId,
-            project_id: projectId,
-            type: 'context',
-            context_id: root.public_id,
-            prev_id: currentHead.public_id,
-            content: {},
-            metadata: { operation: 'update', affected: affectedIds, ...(userMetadata ?? {}) },
-        });
-    } catch (error) {
-        const message = error instanceof Error ? error.message : 'Failed to create version head';
-        return err('internal', message);
-    }
-
     // build updated node copies — copy-on-write, merging changes onto targets
+    const newHeadId = generatePublicId('context');
     const newNodes = orderedNodes.map((n) => {
         const update = updateMap.get(n.public_id);
         const { id: _id, ...changes } = update ?? { id: null };
         return {
             public_id: generatePublicId('msg'),
             project_id: projectId,
-            type: 'message',
+            type: 'message' as const,
             context_id: newHeadId,
             parent_id: n.public_id,
             prev_id: null as string | null,
@@ -129,11 +93,23 @@ export async function updateMessages(
         newNodes[i].prev_id = newNodes[i - 1].public_id;
     }
 
-    // persist the copies — failure -> roll back the orphaned head -> internal
+    // DATA-001: head + copies go out as ONE insertNodes call, so the new
+    // version can never commit half-way — a crash mid-op leaves the previous
+    // head intact (the write is a single SQL statement on every backend).
+    const headRecord = {
+        public_id: newHeadId,
+        project_id: projectId,
+        type: 'context' as const,
+        context_id: root.public_id,
+        prev_id: currentHead.public_id,
+        content: {},
+        metadata: { operation: 'update', affected: affectedIds, child_count: newNodes.length, ...(userMetadata ?? {}) },
+    };
+    let created: Awaited<ReturnType<typeof storage.insertNodes>>;
     try {
-        await storage.insertNodes(newNodes);
+        created = await storage.insertNodes([headRecord, ...newNodes]);
     } catch {
-        await rollbackHead(storage, projectId, newHeadId);
+        // stable message — the raw driver error is not useful to the caller
         return err('internal', 'Failed to update messages');
     }
 
@@ -141,12 +117,14 @@ export async function updateMessages(
     const versions = await getVersions(storage, root.public_id);
     const currentVersion = versions.length - 1;
 
-    // project the copied nodes into the response shape
-    const result: MessageView[] = newNodes.map((n, index: number) => ({
+    // project the copied nodes into the response shape (created rows carry
+    // the wall-clock created_at the adapters stamped on insert — PROM-001)
+    const result: MessageView[] = created.filter((n) => n.public_id !== headRecord.public_id).map((n, index: number) => ({
         ...n.content,
-        id: n.public_id,
+        id: n.public_id!,
         index,
-        metadata: n.metadata,
+        created_at: n.created_at!,
+        metadata: n.metadata ?? {},
     }));
 
     return ok({ data: result, version: currentVersion });

@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 
 import { MemoryStorage } from '../testing/memory-adapter';
 import { seedContext } from '../testing/seed';
+import { getVersions } from '../context-chain';
 import { appendMessages } from './append-messages';
+import { getContext } from './get-context';
+import { updateMessages } from './update-messages';
 
 // =============================================================================
 // appendMessages — behavior-preserving extraction of POST /contexts/:id
@@ -24,9 +27,10 @@ describe('appendMessages', () => {
         const result = await appendMessages(storage, project!.id, rootId, { role: 'user', text: 'hi' });
 
         // success branch — result.ok true with data + version shape
+        // the append created a new version head (PROM-002): create(0) + append(1)
         assert.equal(result.ok, true);
         if (!result.ok) return;
-        assert.equal(result.data.version, 0);
+        assert.equal(result.data.version, 1);
         assert.equal(result.data.data.length, 1);
 
         // first message carries its content, generated id, index 0, default metadata
@@ -65,12 +69,14 @@ describe('appendMessages', () => {
         assert.equal(rows[0].text, 'c');
         assert.equal(rows[1].text, 'd');
 
-        // version is still 0 (append does not create a new version head)
-        assert.equal(result.data.version, 0);
+        // the append created one new version head (PROM-002): create(0) + append(1)
+        assert.equal(result.data.version, 1);
 
-        // new message nodes are persisted under the head and linked after the tail
+        // zero-copy append: the 2 seeded + 2 appended messages exist exactly once
         const messageNodes = storage.getAllNodes().filter((n) => n.type === 'message');
         assert.equal(messageNodes.length, 4);
+        const contextNodes = storage.getAllNodes().filter((n) => n.type === 'context');
+        assert.equal(contextNodes.length, 3); // root + create head + append head
     });
 
     // -- success: metadata is split out of content ----------------------------
@@ -141,12 +147,12 @@ describe('appendMessages', () => {
             metadata: { operation: 'update', affected: [] },
         });
 
-        // append to the latest head — version should be 1 (two heads => length-1)
+        // append to the latest head — the append adds a third head => version 2
         const result = await appendMessages(storage, project!.id, rootId, { text: 'next' });
 
         assert.equal(result.ok, true);
         if (!result.ok) return;
-        assert.equal(result.data.version, 1);
+        assert.equal(result.data.version, 2);
     });
 
     // -- error: context not found -> not_found (404) --------------------------
@@ -253,5 +259,125 @@ describe('appendMessages', () => {
 
         // the op must request serializable isolation, like the handler
         assert.deepEqual(capturedOptions, { isolationLevel: 'serializable' });
+    });
+});
+
+// =============================================================================
+// Version on append (PROM-002) — every append is a new, meaningful version.
+// A captured (append-only) session gains multiple versions, and
+// ?version=N / ?history=true are meaningful for it.
+// =============================================================================
+
+describe('version on append (PROM-002)', () => {
+    it('creates one new version per append batch', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        await appendMessages(storage, project!.id, rootId, { text: 'a' });
+        await appendMessages(storage, project!.id, rootId, { text: 'b' });
+        await appendMessages(storage, project!.id, rootId, { text: 'c' });
+
+        const versions = await getVersions(storage, rootId);
+        // create(0) + three appends(1,2,3)
+        assert.equal(versions.length, 4);
+        assert.deepEqual(versions.map((v) => v.operation), ['create', 'append', 'append', 'append']);
+    });
+
+    it('makes ?version=N and ?history=true meaningful for an append-only session', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        await appendMessages(storage, project!.id, rootId, { text: 'a' });
+        await appendMessages(storage, project!.id, rootId, { text: 'b' });
+        await appendMessages(storage, project!.id, rootId, { text: 'c' });
+
+        // time-travel: each version sees exactly the messages up to that point
+        const v0 = await getContext(storage, project!.id, rootId, { version: 0 });
+        assert.ok(v0.ok);
+        assert.deepEqual((v0.data.data as unknown as Array<{ text: string }>).map((m) => m.text), []);
+
+        const v1 = await getContext(storage, project!.id, rootId, { version: 1 });
+        assert.ok(v1.ok);
+        assert.deepEqual((v1.data.data as unknown as Array<{ text: string }>).map((m) => m.text), ['a']);
+
+        const v2 = await getContext(storage, project!.id, rootId, { version: 2 });
+        assert.ok(v2.ok);
+        assert.deepEqual((v2.data.data as unknown as Array<{ text: string }>).map((m) => m.text), ['a', 'b']);
+
+        const latest = await getContext(storage, project!.id, rootId, {});
+        assert.ok(latest.ok);
+        assert.equal(latest.data.version, 3);
+        assert.deepEqual((latest.data.data as unknown as Array<{ text: string }>).map((m) => m.text), ['a', 'b', 'c']);
+
+        // history lists every version with its operation
+        const hist = await getContext(storage, project!.id, rootId, { history: true });
+        assert.ok(hist.ok);
+        assert.deepEqual(
+            (hist.data.versions ?? []).map((v) => v.operation),
+            ['create', 'append', 'append', 'append']
+        );
+    });
+
+    it('stores each appended message exactly once (zero-copy)', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id, {
+            messages: [{ text: 'seed' }],
+        });
+
+        await appendMessages(storage, project!.id, rootId, { text: 'a' });
+        await appendMessages(storage, project!.id, rootId, { text: 'b' });
+
+        const messageNodes = storage.getAllNodes().filter((n) => n.type === 'message');
+        // 1 seeded + 2 appended, each stored once — no version snapshot copies
+        assert.equal(messageNodes.length, 3);
+        assert.deepEqual(messageNodes.map((n) => n.content.text).sort(), ['a', 'b', 'seed']);
+    });
+
+    it('chains an append head into the previous head via prev_id', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const { rootId, headId } = await seedContext(storage, project!.id, {
+            messages: [{ text: 'seed' }],
+        });
+        const seedMsgId = (storage.getAllNodes().find((n) => n.type === 'message') as { public_id: string }).public_id;
+
+        await appendMessages(storage, project!.id, rootId, { text: 'next' });
+
+        // the new head points at the create head
+        const heads = (await storage.findContextBranches(rootId)) as Array<{ public_id: string; prev_id: string | null }>;
+        const appendHead = heads.find((h) => h.public_id !== headId && h.prev_id === headId);
+        assert.ok(appendHead, 'an append head linking to the create head exists');
+
+        // the appended message links into the previous head's tail
+        const appended = (storage.getAllNodes().find((n) => n.content?.text === 'next') as { prev_id: string | null });
+        assert.equal(appended.prev_id, seedMsgId);
+    });
+
+    it('continues a snapshot created by an update', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id, {
+            messages: [{ text: 'a' }, { text: 'b' }],
+        });
+
+        // update message 0 → creates a snapshot version (v1)
+        const upd = await updateMessages(storage, project!.id, rootId, {
+            updates: [{ index: 0, text: 'A' }],
+        });
+        assert.ok(upd.ok);
+
+        // append after the update → v2, cumulative over the snapshot
+        await appendMessages(storage, project!.id, rootId, { text: 'c' });
+
+        const v1 = await getContext(storage, project!.id, rootId, { version: 1 });
+        assert.ok(v1.ok);
+        assert.deepEqual((v1.data.data as unknown as Array<{ text: string }>).map((m) => m.text), ['A', 'b']);
+
+        const v2 = await getContext(storage, project!.id, rootId, { version: 2 });
+        assert.ok(v2.ok);
+        assert.deepEqual((v2.data.data as unknown as Array<{ text: string }>).map((m) => m.text), ['A', 'b', 'c']);
     });
 });

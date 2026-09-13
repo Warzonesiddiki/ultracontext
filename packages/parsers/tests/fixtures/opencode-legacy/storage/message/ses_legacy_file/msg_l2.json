@@ -1,0 +1,11 @@
+{
+  "role": "assistant",
+  "time": { "created": 1789045260000, "completed": 1789045320000 },
+  "modelID": "claude-sonnet-4",
+  "providerID": "anthropic",
+  "mode": "build",
+  "agent": "build",
+  "path": { "cwd": "/home/demo/webapp", "root": "/home/demo/webapp" },
+  "cost": 0.009,
+  "tokens": { "input": 1200, "output": 310, "reasoning": 40, "total": 1550 }
+}

@@ -1,4 +1,4 @@
-import { hashToken, verifyKeyHash } from '@ultracontext/core';
+import { hashToken, secretsEqual, verifyKeyHash } from '@ultracontext/core';
 import type { KeyCache } from '../cache/types';
 import type { HttpApp, HttpContext, HttpMiddleware } from '../types/http';
 
@@ -49,7 +49,7 @@ function createTokenVerifier(keyCache?: KeyCache) {
         // check cache first
         if (keyCache) {
             const cached = await keyCache.get(prefix);
-            if (cached && cached.keyHash === hash) {
+            if (cached && secretsEqual(cached.keyHash, hash)) {
                 c.set('auth', { apiKeyId: cached.apiKeyId, projectId: cached.projectId });
                 await recordApiKeyUse(c, cached.apiKeyId);
                 return true;
@@ -81,7 +81,8 @@ function createTokenVerifier(keyCache?: KeyCache) {
 async function verifyAdminToken(token: string, c: HttpContext) {
     const expected = c.get('config').ULTRACONTEXT_ADMIN_KEY;
     if (!expected) return false;
-    return token === expected;
+    // constant-time: a one-byte-off admin token must not cost less to reject
+    return secretsEqual(token, expected);
 }
 
 // -- registration -------------------------------------------------------------
@@ -96,5 +97,8 @@ export function registerAuthMiddleware(app: HttpApp, options?: AuthOptions) {
     app.use('/contexts', bearerAuthMiddleware(verifyToken));
     app.use('/contexts/*', bearerAuthMiddleware(verifyToken));
     app.use('/mcp', bearerAuthMiddleware(verifyToken));
+    // admin token on the whole lifecycle surface: create on the bare path,
+    // list/revoke/rotate on the subpaths
     app.use('/v1/keys', bearerAuthMiddleware(verifyAdminToken));
+    app.use('/v1/keys/*', bearerAuthMiddleware(verifyAdminToken));
 }

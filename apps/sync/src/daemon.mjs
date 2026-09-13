@@ -19,9 +19,10 @@ import { acquireFileLock, resolveLockPath } from "./lock.mjs";
 import { redact } from "./redact.mjs";
 import {
   parseClaudeCodeLine, parseCodexLine, parseGstackLine, parseOpenClawLine,
-  parseCursorLine, parseGeminiFile,
+  parseCursorLine, parseGeminiFile, parseOpencodeFile, parseAgyLine,
+  parseFreebuffFile,
 } from "@ultracontext/parsers";
-import { boolFromEnv, expandHome, extractProjectPathFromFile, sha256, toInt } from "./utils.mjs";
+import { boolFromEnv, eventOccurredAt, expandHome, extractProjectPathFromFile, sha256, toInt } from "./utils.mjs";
 import {
   isPrimaryAgentSourceEnabled,
   matchesConfiguredProjectPath,
@@ -105,8 +106,11 @@ async function writeStatusJson(cfg, stats, state, runtime) {
       projectPaths: cfg.projectPaths,
     },
   };
+  // SEC-004: status file is 0600 (rename carries the mode).
+  // encoding + mode must be ONE options object: node 22.22.3 silently
+  // drops `mode` in the 4-arg (file, data, encoding, options) form.
   const tmp = STATUS_FILE + ".tmp";
-  await fs.writeFile(tmp, JSON.stringify(snapshot, null, 2) + "\n", "utf8");
+  await fs.writeFile(tmp, JSON.stringify(snapshot, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
   await fs.rename(tmp, STATUS_FILE);
 }
 
@@ -140,7 +144,7 @@ function setBootstrapState(key, value) {
     if (!data._bootstrapState) data._bootstrapState = {};
     data._bootstrapState[key] = String(value);
     const tmp = CONFIG_FILE + ".tmp.bs";
-    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     fsSync.renameSync(tmp, CONFIG_FILE);
   } catch { /* best effort */ }
 }
@@ -151,7 +155,7 @@ function deleteBootstrapState(key) {
     try { data = JSON.parse(fsSync.readFileSync(CONFIG_FILE, "utf8")); } catch { /* empty */ }
     if (data._bootstrapState) delete data._bootstrapState[key];
     const tmp = CONFIG_FILE + ".tmp.bs";
-    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf8");
+    fsSync.writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
     fsSync.renameSync(tmp, CONFIG_FILE);
   } catch { /* best effort */ }
 }
@@ -395,8 +399,13 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     } catch { /* ignore */ }
 
     const payload = JSON.stringify({ ...existing, ...serializeConfigPrefs() }, null, 2);
-    await fs.mkdir(path.dirname(target), { recursive: true });
-    await fs.writeFile(target, `${payload}\n`, "utf8");
+    // SEC-004: config may hold the raw API key — 0700 dir, 0600 file.
+    // tmp + rename so an existing 0644 file is replaced, not re-written in place.
+    await fs.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
+    try { await fs.chmod(path.dirname(target), 0o700); } catch { /* best effort */ }
+    const tmp = `${target}.tmp.cfg`;
+    await fs.writeFile(tmp, `${payload}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(tmp, target);
     return { saved: true, file: target };
   }
 
@@ -537,6 +546,40 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
       sources.push({ name: "gstack", enabled: true, globs: [gstackGlob], parseLine: parseGstackLine });
     }
 
+    // opencode — SQLite DB (≥1.2.0: opencode.db, v1 message/part or v2
+    // session_message schema) plus the pre-1.2 JSON "storage" layout.
+    // Data dir: ${XDG_DATA_HOME:-~/.local/share}/opencode (see parser header).
+    // OPENCODE_DATA_DIR accepts a comma-separated list of data dirs.
+    const xdgData = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
+    const opencodeDataDir = process.env.OPENCODE_DATA_DIR || `${xdgData}/opencode`;
+    const opencodeGlobs = String(opencodeDataDir)
+      .split(",").map((d) => expandHome(d.trim())).filter(Boolean)
+      .flatMap((dir) => [
+        `${dir}/opencode*.db`,                      // current: SQLite DB
+        `${dir}/storage/message/*/*.json`,           // pre-1.2: message files
+        `${dir}/storage/session/message/*/*.json`,   // migration-era: message files
+      ]);
+    if (boolFromEnv(process.env.INGEST_OPENCODE, true)) {
+      sources.push({ name: "opencode", enabled: true, globs: opencodeGlobs, parseFile: parseOpencodeFile, readBinary: true });
+    }
+
+    // agy (Google Antigravity CLI/IDE) — JSONL step transcripts.
+    // Only antigravity-cli (full, untruncated) + antigravity (IDE) are scanned;
+    // the -ide/-backup siblings would duplicate the same conversations.
+    const agyGlobs = [
+      expandHome(process.env.AGY_GLOB ?? "~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl"),
+      expandHome("~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl"),
+    ];
+    if (boolFromEnv(process.env.INGEST_AGY, true)) {
+      sources.push({ name: "agy", enabled: true, globs: agyGlobs, parseLine: parseAgyLine });
+    }
+
+    // freebuff (CodebuffAI/freebuff) — chat-messages.json per chat
+    const freebuffGlob = expandHome(process.env.FREEBUFF_GLOB ?? "~/.config/manicode/projects/*/chats/*/chat-messages.json");
+    if (boolFromEnv(process.env.INGEST_FREEBUFF, true)) {
+      sources.push({ name: "freebuff", enabled: true, globs: [freebuffGlob], parseFile: parseFreebuffFile });
+    }
+
     return sources;
   }
 
@@ -547,11 +590,13 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     });
   }
 
-  // pull cwd out of a parser-normalized record (handles codex session_meta shape)
+  // pull cwd out of a parser-normalized record (handles codex session_meta shape,
+  // opencode's session.directory / v1 message path.cwd)
   function extractProjectPathFromNormalized(normalized) {
     const candidates = [
       normalized?.raw?.payload?.cwd,
       normalized?.raw?.cwd,
+      normalized?.raw?.directory,
     ];
 
     for (const candidate of candidates) {
@@ -652,9 +697,10 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
         const stat = await fs.stat(filePath);
         const fileId = `${stat.dev}:${stat.ino}`;
 
-        // JSON-format sources (e.g. Gemini): store content hash to match processFile's comparison
+        // JSON-format sources (e.g. Gemini) and binary formats (opencode DB):
+        // store content hash to match processFile's comparison
         if (source.parseFile) {
-          const contents = await fs.readFile(filePath, "utf8");
+          const contents = source.readBinary ? await fs.readFile(filePath) : await fs.readFile(filePath, "utf8");
           store.setOffset(offsetStoreKey(source.name, fileId), sha256(contents));
         } else {
           store.setOffset(offsetStoreKey(source.name, fileId), stat.size);
@@ -694,7 +740,12 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
   // ── validation ──
 
   function validateConfig() {
-    if (!cfg.apiKey) throw new Error("Missing ULTRACONTEXT_API_KEY. Run `ultracontext config` to set up your API key.");
+    if (!cfg.apiKey) {
+      throw new Error(
+        "Missing ULTRACONTEXT_API_KEY. Run `ultracontext serve` first (free — keeps everything on " +
+        "this machine, and the key is picked up automatically) or `ultracontext config` for a hosted key."
+      );
+    }
     if (!cfg.apiKey.startsWith("uc_live_") && !cfg.apiKey.startsWith("uc_test_")) {
       log("warn", "ULTRACONTEXT_API_KEY format looks unusual", { key_prefix: cfg.apiKey.slice(0, 8), key_len: cfg.apiKey.length });
     }
@@ -811,7 +862,7 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     const payload = {
       role: normalized.kind,
       content: { message: normalized.message, event_type: normalized.eventType, timestamp: normalized.timestamp, raw: safeRaw },
-      metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: normalized.sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset },
+      metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: normalized.sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset, occurred_at: eventOccurredAt(normalized.timestamp) },
     };
 
     await uc.append(sessionContextId, payload);
@@ -903,7 +954,7 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
         return {
           role: normalized.kind,
           content: { message: normalized.message, event_type: normalized.eventType, timestamp: normalized.timestamp, raw: safeRaw },
-          metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset },
+          metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset, occurred_at: eventOccurredAt(normalized.timestamp) },
         };
       });
 
@@ -975,13 +1026,19 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
       const offsetKey = offsetStoreKey(source.name, fileId);
       const fileProjectPath = await resolveSourceFileProjectPath({ source, filePath, fileId });
 
-      if (!matchesConfiguredProjectPath(cfg.projectPaths, fileProjectPath)) {
+      // whole-file sources (parseFile) filter per-event below — an unknown
+      // file-level path must not skip the whole file (e.g. an opencode DB
+      // holds sessions from many projects); JSONL sources keep the file gate
+      if (!source.parseFile && !matchesConfiguredProjectPath(cfg.projectPaths, fileProjectPath)) {
         return;
       }
 
-      // JSON-format sources (e.g. Gemini): read entire file, dedup by content hash
+      // JSON-format sources (e.g. Gemini) and binary formats (opencode's
+      // SQLite DB): read entire file, dedup by content hash
       if (source.parseFile) {
-        const fileContents = await fs.readFile(filePath, "utf8");
+        const fileContents = source.readBinary
+          ? await fs.readFile(filePath)
+          : await fs.readFile(filePath, "utf8");
         const contentHash = sha256(fileContents);
         const storedHash = store.getOffset(offsetKey);
         if (storedHash === contentHash) return;
@@ -1000,6 +1057,11 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
           if (!normalized || !normalized.sessionId) continue;
           if (ingestMode === "last_24h" && !isWithinLast24h(normalized.timestamp)) continue;
 
+          // per-event project path (e.g. opencode DB rows carry session.cwd /
+          // session.directory) falls back to the file-level discovery
+          const eventProjectPath = extractProjectPathFromNormalized(normalized) || fileProjectPath;
+          if (!matchesConfiguredProjectPath(cfg.projectPaths, eventProjectPath)) continue;
+
           bumpStat("parsedEvents");
           bumpSourceStat(source.name, "parsedEvents");
           noteSourceActivity(source.name, { lastEventType: normalized.eventType, lastSessionId: normalized.sessionId, lastAt: Date.now() });
@@ -1008,7 +1070,7 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
           const isNew = markEventSeen(store, source.name, eventId);
           if (!isNew) { bumpStat("deduped"); bumpSourceStat(source.name, "deduped"); continue; }
 
-          pendingEvents.push({ normalized, eventId, lineOffset: i, projectPath: fileProjectPath });
+          pendingEvents.push({ normalized, eventId, lineOffset: i, projectPath: eventProjectPath });
         }
 
         if (pendingEvents.length > 0) {
@@ -1147,7 +1209,12 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     // connectivity check
     try { await uc.get({ limit: 1 }); } catch (error) {
       const details = errorDetails(error);
-      throw new Error(`UltraContext auth/connectivity check failed (status=${details.status ?? "?"}, url=${details.url ?? cfg.baseUrl}, body=${details.bodyText ?? details.message}). Check your API key at https://ultracontext.ai`);
+      const isLocal = /^(https?:\/\/)?(127\.0\.0\.1|localhost)/.test(cfg.baseUrl);
+      throw new Error(
+        isLocal
+          ? `Local UltraContext server unreachable (url=${cfg.baseUrl}). Is \`ultracontext serve\` running? Start it in another terminal, then retry.`
+          : `UltraContext auth/connectivity check failed (status=${details.status ?? "?"}, url=${details.url ?? cfg.baseUrl}, body=${details.bodyText ?? details.message}). Check your API key at https://ultracontext.ai`
+      );
     }
 
     log("info", "UltraContext daemon started", {

@@ -22,6 +22,7 @@ import { createApp } from './app';
 import { createStorageAdapter } from '@ultracontext/storage';
 import { createKey } from '@ultracontext/core';
 import { MemoryRateLimiter } from './rate-limit/memory';
+import { repairAllProjects } from './repair';
 
 // -- paths --------------------------------------------------------------------
 
@@ -77,6 +78,13 @@ async function main() {
     }
     process.env.ULTRACONTEXT_ADMIN_KEY = adminKey;
 
+    // record the port so `ultracontext sync` and the MCP server can discover
+    // this server automatically (FREE-007 — zero-config local mode)
+    if (state.port !== port) {
+        state = { ...state, port };
+        writeJson0600(CONFIG_FILE, state);
+    }
+
     // 2 — storage: SQLite unless the user explicitly configured something else
     const provider = (process.env.DATABASE_PROVIDER ?? 'sqlite').toLowerCase();
     let config: any;
@@ -106,6 +114,12 @@ async function main() {
     }
 
     const storage = await createStorageAdapter(config);
+
+    // DATA-001: heal version chains damaged by crashes of older code (an
+    // orphaned head or a headless root). Current ops are single-statement and
+    // can't create these states; this covers legacy databases on upgrade.
+    // Best effort — a repair failure must not block startup.
+    await repairAllProjects(storage).catch(() => undefined);
 
     // 3 — first run: make a project + API key so this is usable immediately
     let apiKey = state.apiKey as string | undefined;
@@ -141,6 +155,9 @@ async function main() {
     console.log(`  ${dim('Stored in')} ${CONFIG_FILE} ${dim('(mode 0600)')}`);
     console.log('');
     console.log(dim('Free and self-hosted. No account, no quota, no paywall, no network required.'));
+    console.log('');
+    console.log(dim('Or just start capturing — `ultracontext sync` finds this server automatically:'));
+    console.log(cyan('    ultracontext sync'));
     console.log('');
     console.log(dim('Point an agent at it (Claude Code):'));
     console.log(cyan(`    claude mcp add ultracontext --transport http ${url}/mcp --header "Authorization: Bearer ${apiKey ?? '<key>'}"`));

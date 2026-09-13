@@ -165,8 +165,8 @@ class UltraContext(_BaseClient):
         """
         # list all contexts
         if context_id is None:
-            params = {"limit": limit} if limit else None
-            return self._request("GET", "/contexts", params=params)
+            list_params = {"limit": limit} if limit else None
+            return self._request("GET", "/contexts", params=list_params)
 
         # get single context
         params: Dict[str, Any] = {}
@@ -259,7 +259,7 @@ class UltraContext(_BaseClient):
         if permanent:
             if ids is not None:
                 raise ValueError("Cannot pass both `ids` and `permanent=True`")
-            body: Optional[Dict[str, Any]] = {"permanent": True}
+            body: Dict[str, Any] = {"permanent": True}
             if metadata:
                 body["metadata"] = metadata
             return self._request("DELETE", f"/contexts/{quote(context_id, safe='')}", json=body)
@@ -388,8 +388,8 @@ class AsyncUltraContext(_BaseClient):
 
         # list all contexts
         if context_id is None:
-            params = {"limit": limit} if limit else None
-            return await self._request("GET", "/contexts", params=params)
+            list_params = {"limit": limit} if limit else None
+            return await self._request("GET", "/contexts", params=list_params)
 
         # get single context
         params: Dict[str, Any] = {}
@@ -455,7 +455,7 @@ class AsyncUltraContext(_BaseClient):
         if permanent:
             if ids is not None:
                 raise ValueError("Cannot pass both `ids` and `permanent=True`")
-            body: Optional[Dict[str, Any]] = {"permanent": True}
+            body: Dict[str, Any] = {"permanent": True}
             if metadata:
                 body["metadata"] = metadata
             return await self._request("DELETE", f"/contexts/{quote(context_id, safe='')}", json=body)

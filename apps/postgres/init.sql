@@ -1,3 +1,23 @@
+-- =============================================================================
+-- UltraContext Postgres schema — GENERATED from the migration registry.
+-- Single source of truth: packages/storage/src/migrations/
+-- (0001_init.ts, postgres.up.sql content). After changing a migration, paste
+-- the cumulative result here so new Supabase deployments start in sync.
+--
+-- New Supabase deployments run THIS file once (SQL editor / init script).
+-- The schema_migrations bootstrap below stamps version 1 so direct
+-- Postgres/Drizzle clients (which auto-migrate on connect) treat the
+-- database as current.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO schema_migrations (version, name) VALUES (1, 'init')
+  ON CONFLICT (version) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS projects (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,

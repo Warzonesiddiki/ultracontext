@@ -3,6 +3,7 @@ import { KvRateLimiter } from './rate-limit/kv';
 import { buildApiConfig } from './config';
 import { createApp } from './app';
 import { SupabaseAdapter } from '@ultracontext/storage/supabase';
+import { repairAllProjects } from './repair';
 
 // =============================================================================
 // CF WORKERS ENTRYPOINT
@@ -21,13 +22,17 @@ type Env = {
 let app: ReturnType<typeof createApp> | null = null;
 
 export default {
-    fetch(request: Request, env: Env): Response | Promise<Response> {
+    async fetch(request: Request, env: Env): Promise<Response> {
         if (!app) {
             const config = buildApiConfig(env as unknown as Record<string, string | undefined>);
             if (config.DATABASE_PROVIDER !== 'supabase') {
                 throw new Error('CF Workers only supports Supabase storage');
             }
             const storage = new SupabaseAdapter(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY);
+
+            // DATA-001: heal version chains damaged by crashes of older code
+            // (production runs Supabase, where writes are not transactional).
+            await repairAllProjects(storage).catch(() => undefined);
 
             const keyCache = env.ULTRACONTEXT_API_KEYS_CACHE
                 ? new KvKeyCache(env.ULTRACONTEXT_API_KEYS_CACHE)

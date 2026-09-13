@@ -9,6 +9,7 @@ export type {
     NodeRow,
     NodeInsertRow,
     ApiKeyRow,
+    ApiKeyPublic,
     ProjectRow,
     ContextFilters,
     SearchFilters,
@@ -75,10 +76,14 @@ export type { DeleteMessagesParams } from './ops/delete-messages';
 export { deleteManyContexts } from './ops/delete-many';
 export type { DeleteResult, DeleteManyResult } from './ops/delete-many';
 
+export { repairOrphanedHeads } from './ops/repair-orphaned-heads';
+export type { RepairReport } from './ops/repair-orphaned-heads';
+
 export { createKey } from './ops/create-key';
 
 export { verifyKey, verifyKeyHash, hashToken } from './ops/verify-key';
 export type { VerifiedKey } from './ops/verify-key';
+export { listKeys, revokeKey, rotateKey } from './ops/key-lifecycle';
 
 // -- public ids ---------------------------------------------------------------
 
@@ -87,6 +92,7 @@ export { generatePublicId } from './public-ids';
 // -- api keys -----------------------------------------------------------------
 
 export { toBase62, generateKey, hashKey } from './api-keys';
+export { secretsEqual } from './secrets';
 
 // -- constants ----------------------------------------------------------------
 
@@ -94,7 +100,7 @@ export { KEY_PREFIX_LEN, MAX_BATCH_DELETE } from './constants';
 
 // -- request parsing ----------------------------------------------------------
 
-export { isPlainObject, parseUpdateRequestBody } from './request-parsing';
+export { isPlainObject, parseUpdateRequestBody, parseIndex, parseLimit } from './request-parsing';
 export type { UpdateRequestInput } from './request-parsing';
 
 // -- first row ----------------------------------------------------------------

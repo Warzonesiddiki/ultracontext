@@ -45,7 +45,7 @@ function configPaths() {
   return { dir, path: path.join(dir, "config.json") };
 }
 
-function readConfig() {
+export function readConfig() {
   try {
     return JSON.parse(fs.readFileSync(configPaths().path, "utf8"));
   } catch {
@@ -53,11 +53,19 @@ function readConfig() {
   }
 }
 
-function writeConfig(patch) {
+// SEC-004: config.json holds the raw API key — the directory and the file
+// must not be readable by other users on a multi-user machine.
+export function writeConfig(patch) {
   const existing = readConfig();
   const { dir, path: file } = configPaths();
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ ...existing, ...patch }, null, 2) + "\n", "utf8");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { fs.chmodSync(dir, 0o700); } catch { /* best effort */ }
+  const tmp = file + ".tmp";
+  // encoding + mode must be ONE options object: node 22.22.3 silently
+  // drops `mode` in the 4-arg (file, data, encoding, options) form
+  fs.writeFileSync(tmp, JSON.stringify({ ...existing, ...patch }, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, file); // atomic; rename carries the 0600 mode
+  try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
 }
 
 // ── validation ──────────────────────────────────────────────────

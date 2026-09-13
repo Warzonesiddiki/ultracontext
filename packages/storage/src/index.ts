@@ -26,7 +26,7 @@ export async function createStorageAdapter(config: StorageConfig): Promise<Stora
     if (config.DATABASE_PROVIDER === 'sqlite') {
         return createSqliteAdapter(config.DATABASE_FILE);
     }
-    return new DrizzleAdapter(createDbClient(config.DATABASE_URL));
+    return new DrizzleAdapter(await createDbClient(config.DATABASE_URL));
 }
 
 // -- re-exports ---------------------------------------------------------------

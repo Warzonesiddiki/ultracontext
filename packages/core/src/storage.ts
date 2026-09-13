@@ -40,6 +40,17 @@ export type ApiKeyRow = {
     key_hash: string;
 };
 
+// What a key-lifecycle caller may see. Never includes key_hash — the hash
+// is secret material and has no business in a listing response.
+export type ApiKeyPublic = {
+    id: number;
+    project_id: number;
+    key_prefix: string;
+    name: string | null;
+    created_at: string;
+    last_used_at: string | null;
+};
+
 export type ProjectRow = {
     id: number;
 };
@@ -120,6 +131,12 @@ export interface StorageAdapter {
     findVersions(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'created_at' | 'metadata'>[]>;
     findNonContextNodes(contextId: string): Promise<NodeRow[]>;
     /**
+     * All non-context nodes whose context_id is one of the given ids (batch
+     * form of findNonContextNodes). Used to read a version's cumulative
+     * message chain across append heads (PROM-002).
+     */
+    findNonContextNodesByContextIds(contextIds: string[]): Promise<NodeRow[]>;
+    /**
      * Resolve a ROOT context. MUST be project-scoped — an unscoped lookup here
      * is a cross-tenant read (see SEC-001).
      */
@@ -143,6 +160,11 @@ export interface StorageAdapter {
     findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null>;
     insertApiKey(values: { project_id: number; key_prefix: string; key_hash: string }): Promise<void>;
     updateApiKeyLastUsedAt(id: number, lastUsedAt: string): Promise<void>;
+    // key lifecycle — listing never exposes key_hash
+    listApiKeys(projectId: number): Promise<ApiKeyPublic[]>;
+    findApiKey(id: number): Promise<ApiKeyPublic | null>;
+    /** Delete a key row. Returns false if no such key exists. */
+    deleteApiKey(id: number): Promise<boolean>;
 
     // activity / analytics — server-side rollup of a project's write traffic.
     // Adapters aggregate in the database where possible; never throws for an
@@ -152,6 +174,7 @@ export interface StorageAdapter {
     // projects
     insertProject(name: string): Promise<ProjectRow | null>;
     deleteProject(id: number): Promise<void>;
+    listProjects(): Promise<Pick<ProjectRow, 'id'>[]>;
 
     // transactions — adapter-specific atomicity (tx on Drizzle, no-op on Supabase REST)
     transaction<T>(fn: (tx: StorageAdapter) => Promise<T>, options?: TransactionOptions): Promise<T>;

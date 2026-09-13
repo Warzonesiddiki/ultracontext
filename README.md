@@ -59,12 +59,13 @@ Open source. Framework-agnostic. Customizable via the git-like Context API.
 
 ## Features
 
-| CLI | Auto-ingest Claude Code, Codex, OpenClaw, Cursor, Gemini and gstack sessions with a terminal dashboard. |
+| CLI | Auto-ingest sessions from Claude Code, Codex, Cursor, Gemini CLI, OpenClaw, opencode, Antigravity (agy), Freebuff and gstack, with a terminal dashboard. |
 | --- | --- |
 | MCP Server | Share context everywhere. Built into the API, or run standalone via stdio. |
 | Context API | Git-like context engineering API. Store, version, and retrieve agent context with zero complexity. |
 | Search | Full-text search across every captured session. Find a plan by what it says, not by its ID. |
 | Analytics | Usage totals, per-agent breakdown and a day/week/month series — computed from your own database. |
+| Backups | Safe online snapshots of your local database, protected restore, and a retention GC — free and local. |
 | Self-hosted | Run the whole thing on your own machine against a local SQLite file. No account, no cloud, no cost. |
 
 ---
@@ -108,13 +109,35 @@ Free and self-hosted. No account, no quota, no paywall, no network required.
 ```
 
 On first run it generates an admin key and an API key, writes them to
-`~/.ultracontext/` with `0600` permissions, and prints a ready-to-paste command
-for connecting an agent. Everything stays on your disk.
+`~/.ultracontext/` with `0600` permissions (and keeps the directory itself
+`0700`), and prints a ready-to-paste command for connecting an agent.
+Everything stays on your disk.
 
 ```bash
 ultracontext serve --port 9000     # pick a port
 DATABASE_PROVIDER=postgres DATABASE_URL=… ultracontext serve    # or bring your own Postgres
 ```
+
+### The whole loop, offline
+
+`serve` records the port and key in `~/.ultracontext/server.json`, so
+everything else finds it automatically — **zero config, zero network**:
+
+```bash
+ultracontext serve    # terminal 1 — API + MCP + search on localhost
+ultracontext sync     # terminal 2 — daemon picks the local server up automatically
+```
+
+The capture daemon and the standalone MCP server resolve credentials in the
+same order: explicit `ULTRACONTEXT_API_KEY` / `ULTRACONTEXT_BASE_URL` → the
+local `server.json` → the hosted `config.json` (from `ultracontext config`).
+Set `ULTRACONTEXT_LOCAL=1` to force local mode. Your agents' transcripts never
+leave the machine.
+
+CORS is locked to loopback origins by default (`localhost` / `127.0.0.1` /
+`::1`, any port) so local dashboards work while external websites get no
+`Access-Control-Allow-Origin` header at all. Add origins for a web UI with
+`ULTRACONTEXT_CORS_ORIGINS=https://dash.example.com,http://other:9000`.
 
 ## Quick Start
 
@@ -125,21 +148,85 @@ ultracontext          # start sync (daemon + dashboard)
 That's it. UltraContext watches your agents, ingests context in realtime, and the dashboard shows everything.
 
 ```bash
-ultracontext sync     # start sync (daemon + dashboard)
+ultracontext sync     # start sync (daemon + dashboard) — auto-finds a local server
 ultracontext serve    # run the context server locally (SQLite, free)
 ultracontext stats    # usage analytics for everything you captured (free)
+ultracontext backup   # safe local snapshot + protected restore (free)
+ultracontext gc       # retention: drop sessions older than your window (free)
 ultracontext switch   # continue a session in a different agent
 ultracontext stop     # stop daemon
 ultracontext config   # run setup wizard
 ultracontext update   # update CLI globally
 ```
 
+## Agent integrations
+
+UltraContext ingests sessions from every AI coding harness you run, straight from
+its on-disk store. All sources are on by default; disable any of them with the
+`INGEST_<NAME>=0` env var (or point the glob at a custom location).
+
+| Source | What it reads | Default location |
+| --- | --- | --- |
+| `claude` | Claude Code JSONL sessions | `~/.claude/projects/**/*.jsonl` |
+| `codex` | Codex CLI JSONL sessions | `~/.codex/sessions/**/*.jsonl` |
+| `cursor` | Cursor JSONL sessions | `~/.cursor/projects/**/*.jsonl` |
+| `gemini` | Gemini CLI JSON chat files | `~/.gemini/tmp/*/chats/session-*.json` |
+| `openclaw` | OpenClaw JSONL sessions | `~/.openclaw/agents/*/sessions/**/*.jsonl` |
+| `opencode` | opencode's SQLite DB (v1.2.0+, both current `session_message` and older `message`/`part` schemas) plus the pre-1.2 JSON storage layout | `${XDG_DATA_HOME:-~/.local/share}/opencode` (`OPENCODE_DATA_DIR` accepts a comma-separated list) |
+| `agy` | Google Antigravity CLI/IDE JSONL transcripts (untruncated) | `~/.gemini/antigravity-cli/brain/*/.system_generated/logs/transcript_full.jsonl` + `~/.gemini/antigravity/brain/*/.system_generated/logs/transcript.jsonl` |
+| `freebuff` | Freebuff (CodebuffAI) `chat-messages.json` per chat | `~/.config/manicode/projects/*/chats/*/chat-messages.json` |
+| `gstack` | gstack skill artifacts | `~/.gstack/projects/**/*.jsonl` |
+
+Notes:
+
+- **Ingest-only where marked.** `ultracontext switch` (continue a session in a
+  different agent) currently has writers for `claude` and `codex` only. The other
+  sources are ingested and searchable; they cannot be written back to.
+- Antigravity (`agy`) scans the CLI store and the IDE store, deliberately
+  skipping the `antigravity-ide` and `antigravity-backup` siblings so the same
+  conversation is not captured two or three times.
+- opencode reads its database **read-only** — it never locks or modifies the
+  file, even while opencode is running.
+
+### Hand off between agents — `ultracontext switch`
+
+Your agent's full working context is portable: switch picks up a session from
+one agent and continues it in another. The headline example — *"Codex, grab
+the last plan Claude Code made"* — is one command:
+
+```bash
+ultracontext switch codex              # latest Claude Code session → new Codex session
+ultracontext switch claude             # latest Codex session → new Claude Code session
+ultracontext switch codex --last 50    # carry over only the last 50 messages
+ultracontext switch codex --session /path/to/session.jsonl
+ultracontext switch codex --dry-run    # preview what carries over — writes nothing
+ultracontext switch codex --no-launch  # print JSON (session id, file, count) for scripting
+```
+
+What happens:
+
+1. The source agent's latest session (or `--session` / `--last N` of it) is
+   parsed from its on-disk store.
+2. A fresh target session file is written (new session id, same working
+   directory) with the carried-over messages.
+3. The target agent launches in a new terminal tab/window with the session
+   loaded (`codex fork <id> -C <cwd>` on macOS, Linux, and Windows), or the
+   command is printed for you to run.
+
+`--dry-run` parses and shows the source file, destination, message count and
+working directory without writing or launching anything.
+
+Writers exist for `claude` and `codex` only (the other sources are
+ingest-only); terminal auto-launch covers Ghostty/iTerm2/Terminal on macOS,
+common Linux emulators (kitty, Alacritty, WezTerm, foot, Konsole,
+GNOME Terminal, xfce4-terminal, xterm), and Windows Terminal / PowerShell.
+
 ## Context API
 
 For builders who want to go deeper. Git-like primitives for context engineering.
 
 - **Five methods** — Create, get, append, update, delete. That's it.
-- **Automatic versioning** — Edits and deletes create a new version. Full history out of the box.
+- **Automatic versioning** — Every append, edit, or delete creates a new version. Full history out of the box.
 - **Time-travel** — Jump to any point in your context history, by version or by timestamp.
 - **Full-text search** — Query every captured session by what it says.
 - **Analytics** — Totals, per-agent breakdown and a day/week/month series, computed over your own data.
@@ -205,10 +292,64 @@ at the `project_activity_daily` / `project_activity_weekly` views in
 [apps/postgres/init.sql](./apps/postgres/init.sql). It is your database; nothing
 is hidden behind an API we control.
 
+### Backups & retention
+
+Your data is one local SQLite file, and everything you need to protect it is built in — no paid backup tier, nothing leaves the machine.
+
+```bash
+ultracontext backup                    # safe snapshot (works while the server runs)
+ultracontext backup --list             # show existing backups
+ultracontext backup --restore <file>   # roll back (auto-saves your current state first)
+ultracontext backup --full             # + config, API keys, daemon state (0600 .tar.gz)
+ultracontext gc --keep 30d             # drop sessions idle for 30+ days
+ultracontext gc --keep 6mo --dry-run   # preview only, delete nothing
+```
+
+- **Snapshots are safe even while the server is running** — they use SQLite's
+  online backup API and are `integrity_check`-verified before being reported.
+  The 10 newest are kept automatically (`--keep` to change).
+- **Writes are all-or-nothing.** Every version update lands as a single
+  database statement, so a crash mid-update can never leave a broken version
+  behind — the chain stays consistent either way (and the server heals any
+  damage older versions of the code may have left).
+- **Restore is protected.** The current database is saved as
+  `pre-restore-<timestamp>.sqlite` before anything is replaced, and restore
+  refuses to run while the local server is running (`--force` overrides).
+- **Retention is opt-in and previewable.** `gc` drops whole sessions — every
+  version and message — whose last activity is older than the window.
+  `--dry-run` shows what would go, `--vacuum` reclaims the disk space.
+  A good cron: `0 3 * * * ultracontext gc --keep 6mo`.
+
+### API key management
+
+Keys are listed, revoked and rotated over the API — a leaked key stops
+working within a minute. These are admin operations: they use the admin key
+(from `~/.ultracontext/server.json` with `ultracontext serve`), not the API
+keys themselves, so a leaked key can still be revoked.
+
+```bash
+ADMIN=$(jq -r .adminKey ~/.ultracontext/server.json)
+
+curl -H "Authorization: Bearer $ADMIN" \
+  "$ULTRACONTEXT_BASE_URL/v1/keys/<projectId>"          # list (prefix, created, last used — never the hash)
+
+curl -X DELETE -H "Authorization: Bearer $ADMIN" \
+  "$ULTRACONTEXT_BASE_URL/v1/keys/<keyId>"              # revoke — effective immediately
+
+curl -X POST -H "Authorization: Bearer $ADMIN" \
+  "$ULTRACONTEXT_BASE_URL/v1/keys/<keyId>/rotate"       # new key for the same project; old key revoked
+```
+
+Abuse protection is on by default and is **not** a paywall: 1000 req/min per
+API key, 300/min per IP, 10/min per IP for key creation/rotation, and
+20/min per IP on failed admin logins. Exceeding a limit returns `429` with a
+`Retry-After` — the response says so explicitly, because the obvious
+assumption is a quota. Self-hosters can disable it with `RATE_LIMIT_DISABLED=1`.
+
 ### No paywall, ever
 
 UltraContext is Apache-2.0 and self-hostable in full. Every capability — search,
-analytics, versioning, forking, the MCP server, all six agent integrations — is
+analytics, versioning, forking, the MCP server, every agent integration — is
 available free, with no account and no usage cap. There is no paid tier to unlock.
 
 Use the API standalone to build your own agents, or extend existing ones in UltraContext.

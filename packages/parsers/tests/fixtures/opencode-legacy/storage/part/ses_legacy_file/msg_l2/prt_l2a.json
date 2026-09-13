@@ -1,0 +1,5 @@
+{
+  "type": "text",
+  "text": "Messages are lost because the consumer acks before persisting. I'll move the ack after the write.",
+  "time": { "start": 1789045260000 }
+}

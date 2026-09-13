@@ -12,9 +12,10 @@ and local — all features, no paywall, no telemetry, no network dependency.
 **FREE-006 (`ultracontext backup` + `ultracontext gc`)**, then
 **FREE-007 (local-first daemon + MCP — the offline loop)**, then
 **PROM-002 (version on append — the git model)** and **SEC-002 (CORS
-allowlist)**, then SEC-004, CI-001, DATA-004, DATA-001, and **PROM-003
+allowlist)**, then SEC-004, CI-001, DATA-004, DATA-001, **PROM-003
 (`ultracontext switch` documented + cross-platform terminal launch +
-`--dry-run`)** — see the notes below the table.
+`--dry-run`)** and **SEC-003 (timing-safe secret comparison)** — see the
+notes below the table.
 
 UltraContext now ingests **9** sources, up from 6:
 
@@ -340,20 +341,59 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   real `--no-launch` run writing a valid codex rollout
   (`~/.codex/sessions/<date>/rollout-….jsonl` with `session_meta`).
 
+### TEST-001 + PROM-005 — board hygiene (verified, no code changes)
+
+- **TEST-001** ("broken parsers assertion") was already fixed in the tree
+  since the initial merge `1ff782b` — the board predates it. Marked
+  SHIPPED; parsers suite green (98/98).
+- **PROM-005** (README accuracy pass): all four board points were written
+  against an older checkout and are already met (nine sources listed,
+  local-first section present, typo gone, `Requires Node >= 22.12.0`).
+  Re-verified every concrete README claim against the code on 2026-09-13
+  (port 8787, env var names, defaults, the real launch command). No README
+  changes required — marked SHIPPED.
+
+### SEC-003 — timing-safe secret comparison (shipped last in this thread)
+
+- **The problem:** the raw admin token and both derived API-key hashes
+  (cache hit + storage fallback) were compared with `===`/`!==`, which
+  short-circuits on the first differing byte — a timing oracle on secret
+  material.
+- **The fix:** new core primitive `secretsEqual(a, b)`
+  (`packages/core/src/secrets.ts`, exported from the package index):
+  both sides reduced to fixed-size SHA-256 digests first (so a length
+  difference can't reveal which input was shorter), then compared with
+  `crypto.timingSafeEqual` (never short-circuits). Replaced all three
+  comparison sites: `verifyAdminToken` (auth.ts), the cached key-hash
+  check (auth.ts), and `verifyKeyHash` (core ops). A whole-repo grep for
+  `===`/`!==` against secret-named operands now finds nothing.
+- **13 new tests:** 6 core unit (`secrets.test.ts` — identical, one-char
+  off, different lengths both orders, empty inputs, sha256-hex digests,
+  unicode) + 7 API (`apps/api/src/tests/auth.test.ts` — valid key 200,
+  one-char-off key 401, same-prefix/different-hash key 401 AFTER the real
+  key populated the cache [exercises BOTH constant-time paths], valid key
+  200 on the cache-hit path, missing bearer 401, valid admin 200,
+  one-char-off admin 401, longer admin 401).
+- **Bonus fix:** core's npm test glob `src/**/*.test.ts` (bash has no
+  globstar) silently skipped top-level `src/*.test.ts` — the new
+  `secrets.test.ts` never ran under `npm test` until the script was
+  changed to `node --import tsx --test src/*.test.ts src/**/*.test.ts`.
+  Verify new test files show up in `npm test` output.
+
 ---
 ## 2. Test + typecheck baseline (current)
 
 ```
-packages/core        206 pass / 0 fail   (was 191; +5 PROM-002, +10 DATA-001 crash-consistency)
+packages/core        212 pass / 0 fail   (was 191; +5 PROM-002, +10 DATA-001 crash-consistency, +6 SEC-003 secrets)
 packages/storage      32 pass / 0 fail   (was 20; +12 DATA-004 migrations)
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
 apps/js-sdk           67 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server, +2 SEC-004 perms, +17 PROM-003 switch)
 apps/sync             10 pass / 0 fail
-apps/api              49 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests)
+apps/api              56 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests; +7 SEC-003 auth)
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 apps/python-sdk       20 pass / 0 fail   (NEW in CI-001: tests/test_client.py) + mypy strict clean
 ────────────────────────────────────
-total                487 pass / 0 fail
+total                500 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -375,12 +415,18 @@ appending one freebuff message appended **1** (incremental).
 ## 3. What is still open (board)
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
-(interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-004,
-CI-001, DATA-004, DATA-001, PROM-003 SHIPPED this thread),
+(interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-003,
+SEC-004, CI-001, DATA-004, DATA-001, PROM-003 SHIPPED this thread;
+TEST-001 + PROM-005 verified-already-done and marked),
 `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
-Next highest-value (plus the open-ended harness list):
+Next highest-value on the board (plus the open-ended harness list):
+- **SEC-005** (rate limiting + API key lifecycle — revoke/rotate/list),
+  then the P1 smalls: API-001 (validate `limit`), API-002 (strict integer
+  parsing), API-006 (body size cap), BUILD-001 (sync → workspace SDK),
+  BUILD-002 (mcp bin), DATA-002/003 (SQLite UNIQUE + FK cascade), PROM-001,
+  SEC-006 (deeper redaction).
 - The harness candidates (Amp, Cline, Roo Code, Kilo Code, Windsurf, Zed,
   Aider, Goose, Crush, Droid/Factory, Continue, pi).
 - **CI promotion (admin actions):** grant `workflows` permission to the

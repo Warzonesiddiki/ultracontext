@@ -90,6 +90,7 @@ export { generatePublicId } from './public-ids';
 // -- api keys -----------------------------------------------------------------
 
 export { toBase62, generateKey, hashKey } from './api-keys';
+export { secretsEqual } from './secrets';
 
 // -- constants ----------------------------------------------------------------
 

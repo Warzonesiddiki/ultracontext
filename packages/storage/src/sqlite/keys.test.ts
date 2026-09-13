@@ -73,4 +73,67 @@ describe('SqliteAdapter — key lifecycle', () => {
         assert.equal(await db.deleteApiKey(rows[0].id), false, 'second delete reports false');
         assert.equal(await db.deleteApiKey(424242), false, 'unknown id reports false');
     });
+
+    it('deleteProject cascades keys and nodes (FK ON DELETE CASCADE)', async () => {
+        const db = await createSqliteAdapter(tmpDbUrl());
+        const p1 = await db.insertProject('doomed');
+        const p2 = await db.insertProject('keeper');
+        await db.insertApiKey({ project_id: p1!.id, key_prefix: 'uc_live_FFFF', key_hash: 'hash-f' });
+        await db.insertApiKey({ project_id: p2!.id, key_prefix: 'uc_live_GGGG', key_hash: 'hash-g' });
+        await db.insertNodes({
+            public_id: 'ctx-doomed',
+            project_id: p1!.id,
+            type: 'context',
+            content: {},
+            metadata: {},
+        });
+        await db.insertNodes({
+            public_id: 'ctx-keeper',
+            project_id: p2!.id,
+            type: 'context',
+            content: {},
+            metadata: {},
+        });
+
+        await db.deleteProject(p1!.id);
+
+        assert.equal((await db.listApiKeys(p1!.id)).length, 0, 'api_keys must cascade');
+        assert.equal((await db.listApiKeys(p2!.id)).length, 1, 'other projects untouched');
+        assert.equal((await db.listRootContexts(p1!.id, 10)).length, 0, 'nodes must cascade');
+        assert.equal((await db.listRootContexts(p2!.id, 10)).length, 1, 'other projects untouched');
+    });
+});
+
+describe('SqliteAdapter — constraint enforcement (migration 0002)', () => {
+    it('rejects a duplicate key_prefix and a duplicate node public_id', async () => {
+        const db = await createSqliteAdapter(tmpDbUrl());
+        const p = await db.insertProject('x');
+        await db.insertApiKey({ project_id: p!.id, key_prefix: 'uc_live_HHHH', key_hash: 'hash-h' });
+        // drizzle wraps the libsql error: the SQLITE_CONSTRAINT text is on cause
+        await assert.rejects(
+            () => db.insertApiKey({ project_id: p!.id, key_prefix: 'uc_live_HHHH', key_hash: 'hash-h2' }),
+            (err: any) => /UNIQUE|constraint/i.test(`${err?.message ?? ''} ${err?.cause?.message ?? ''}`),
+            'duplicate key_prefix must fail loudly',
+        );
+
+        await db.insertNodes({
+            public_id: 'ctx-dup',
+            project_id: p!.id,
+            type: 'context',
+            content: {},
+            metadata: {},
+        });
+        await assert.rejects(
+            () =>
+                db.insertNodes({
+                    public_id: 'ctx-dup',
+                    project_id: p!.id,
+                    type: 'context',
+                    content: {},
+                    metadata: {},
+                }),
+            (err: any) => /UNIQUE|constraint/i.test(`${err?.message ?? ''} ${err?.cause?.message ?? ''}`),
+            'duplicate public_id must fail loudly',
+        );
+    });
 });

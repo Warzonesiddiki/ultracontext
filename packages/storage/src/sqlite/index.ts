@@ -59,6 +59,12 @@ export function normalizeSqliteUrl(input: string): string {
 // migrations (idempotent; stamps schema_migrations)
 export async function createSqliteAdapter(url: string): Promise<SqliteAdapter> {
     const client = createClient({ url: normalizeSqliteUrl(url) });
+    // Foreign keys are OFF by default in SQLite — without this, the
+    // ON DELETE CASCADE constraints (migration 0002) are decorative and
+    // deleting a project would orphan its keys and nodes. Must be set per
+    // connection before any other statement; the migration rebuild (0002)
+    // is written to run safely with enforcement on.
+    await client.execute('PRAGMA foreign_keys = ON');
     await migrateSqlite(client);
     return new SqliteAdapter(drizzle(client, { schema }));
 }
@@ -367,6 +373,10 @@ export class SqliteAdapter implements StorageAdapter {
     }
 
     async deleteProject(id: number) {
+        // CASCADE (PRAGMA foreign_keys = ON, migration 0002) removes the
+        // project's api_keys and nodes; nodes_fts has no cascade, so its
+        // rows are removed explicitly or they leak forever.
+        await this.db.run(sql`DELETE FROM nodes_fts WHERE project_id = ${id}`);
         await this.db.delete(projects).where(eq(projects.id, id));
     }
 

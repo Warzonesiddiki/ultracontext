@@ -8,11 +8,13 @@
 // applied anywhere — add a new one instead.
 
 import { initMigration } from './0001_init';
+import { sqliteConstraintsMigration } from './0002_sqlite_constraints';
 import type { Migration } from './types';
 
 export const migrations: Migration[] = [
     // ── append new migrations below, in version order ────────────────────
     initMigration,
+    sqliteConstraintsMigration,
 ];
 
 export function validateRegistry(list: Migration[]): void {

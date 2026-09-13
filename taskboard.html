@@ -171,10 +171,10 @@ const T = [
  acc:"CI is required to merge: install → pnpm check → all 6 test suites → pytest + mypy → build → verify every declared bin path exists — all steps implemented and verified green locally; workflow file promotion blocked only on the GitHub App 'workflows' permission (admin action)."},
 
 /* ── PHASE 2 ─────────────────────────────────────────────────────── */
-{id:"DATA-004",sev:"P1",ph:2,eff:"L",area:"Data",t:"Introduce migration tooling",
- file:"apps/postgres/init.sql · packages/storage/src/db.ts · sqlite/schema.ts",
- d:"init.sql is bare CREATE TABLE IF NOT EXISTS — no versions, no up/down. The schema is defined three times (Drizzle, init.sql, SQLite) and they have already drifted. Blocks DATA-002 and DATA-003.",
- acc:"A schema change is expressible as a reviewed, reversible migration on both Postgres and SQLite."},
+{id:"DATA-004",sev:"P1",ph:2,eff:"L",area:"Data",t:"Introduce migration tooling — SHIPPED",
+ file:"packages/storage/src/migrations/ (new) · apps/postgres/init.sql · packages/storage/src/{db,sqlite/index,sqlite/schema}.ts",
+ d:"DONE. New packages/storage/src/migrations/: a Migration is an ordered, numbered unit with up + down SQL for BOTH dialects side by side (0001_init.ts is the baseline — exact former init.sql / SCHEMA_SQL content, all idempotent). Runner: schema_migrations bookkeeping table; each migration applies inside one transaction (DDL is transactional in both PG and SQLite — version stamp and schema change commit together); migrate*() is idempotent and safe on legacy databases (baseline simply stamps v1, data untouched); rollback*() reverses down to any version, with a hard error if an applied version is missing from the registry (no silent drift). Wired in: createSqliteAdapter runs migrateSqlite on open; createDbClient (direct Postgres) auto-migrates on connect; apps/postgres/init.sql kept for Supabase deploys with a generated-from-registry header + schema_migrations bootstrap. SCHEMA_SQL is deprecated (kept as export). 12 new tests: real in-memory SQLite (fresh, idempotent, legacy-migration-with-data, full rollback round-trip, second-migration up/down, registry guard) + Postgres runner via mocked driver (transactional up, no-op when current, rollback SQL, registry guard).",
+ acc:"A schema change is expressible as a reviewed, reversible migration on both Postgres and SQLite — verified: 0002-style test migration applies and rolls back cleanly on SQLite; Postgres SQL validated via mocked driver (no live PG in CI yet)."},
 {id:"DATA-002",sev:"P1",ph:2,eff:"M",area:"Data",t:"Add missing UNIQUE constraints to SQLite",
  file:"packages/storage/src/sqlite/schema.ts",
  d:"Postgres has nodes.public_id UNIQUE and api_keys.key_prefix UNIQUE; SQLite has neither. A prefix collision would silently route one key's traffic to another project.",

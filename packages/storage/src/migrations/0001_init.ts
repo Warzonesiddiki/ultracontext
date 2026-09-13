@@ -1,23 +1,19 @@
--- =============================================================================
--- UltraContext Postgres schema — GENERATED from the migration registry.
--- Single source of truth: packages/storage/src/migrations/
--- (0001_init.ts, postgres.up.sql content). After changing a migration, paste
--- the cumulative result here so new Supabase deployments start in sync.
---
--- New Supabase deployments run THIS file once (SQL editor / init script).
--- The schema_migrations bootstrap below stamps version 1 so direct
--- Postgres/Drizzle clients (which auto-migrate on connect) treat the
--- database as current.
--- =============================================================================
+// =============================================================================
+// MIGRATION 0001 — init: baseline schema (projects, api_keys, nodes + indexes)
+// =============================================================================
+//
+// This is the baseline: the exact DDL that used to live in
+// apps/postgres/init.sql (Postgres) and SCHEMA_SQL in sqlite/schema.ts
+// (SQLite). Both scripts are idempotent (IF NOT EXISTS / CREATE OR REPLACE),
+// so migrating a legacy database that was already bootstrapped by the old
+// code is a safe no-op that simply stamps version 1.
+//
+// NOTE: the `schema_migrations` bookkeeping table is created by the runner,
+// not by migrations.
 
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    name TEXT NOT NULL,
-    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-INSERT INTO schema_migrations (version, name) VALUES (1, 'init')
-  ON CONFLICT (version) DO NOTHING;
+import type { Migration } from './types';
 
+const POSTGRES_UP = `
 CREATE TABLE IF NOT EXISTS projects (
   id BIGSERIAL PRIMARY KEY,
   name TEXT NOT NULL,
@@ -195,3 +191,76 @@ AS $$
     GROUP BY 1, 2
     ORDER BY 1, 2;
 $$;
+`;
+
+const POSTGRES_DOWN = `
+DROP FUNCTION IF EXISTS ultracontext_activity(BIGINT, TIMESTAMPTZ, TIMESTAMPTZ, TEXT, TEXT);
+DROP VIEW IF EXISTS project_activity_weekly;
+DROP VIEW IF EXISTS project_activity_daily;
+DROP TABLE IF EXISTS nodes;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS projects;
+`;
+
+const SQLITE_UP = `
+CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    public_id TEXT
+);
+CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    key_prefix TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    name TEXT,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_id TEXT NOT NULL,
+    project_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '{}',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    parent_id TEXT,
+    prev_id TEXT,
+    context_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_nodes_context_id ON nodes(context_id);
+CREATE INDEX IF NOT EXISTS idx_nodes_project_type ON nodes(project_id, type);
+
+-- Full-text search index over message nodes (not version heads).
+-- Search is a free, first-class capability — there is no quota and no paywall.
+-- UNINDEXED columns are stored but not tokenised: they are only used for filtering.
+CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+    public_id UNINDEXED,
+    project_id UNINDEXED,
+    context_id UNINDEXED,
+    body,
+    tokenize = 'porter unicode61'
+);
+`;
+
+const SQLITE_DOWN = `
+DROP TABLE IF EXISTS nodes_fts;
+DROP TABLE IF EXISTS nodes;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS projects;
+`;
+
+export const initMigration: Migration = {
+    version: 1,
+    name: 'init',
+    up: {
+        postgres: POSTGRES_UP,
+        sqlite: SQLITE_UP,
+    },
+    down: {
+        postgres: POSTGRES_DOWN,
+        sqlite: SQLITE_DOWN,
+    },
+};

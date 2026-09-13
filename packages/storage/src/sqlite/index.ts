@@ -4,7 +4,8 @@ import { createClient } from '@libsql/client';
 
 import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { searchableText } from '@ultracontext/core';
-import { schema, nodes, api_keys, projects, SCHEMA_SQL } from './schema';
+import { schema, nodes, api_keys, projects } from './schema';
+import { migrateSqlite } from '../migrations/sqlite';
 
 // =============================================================================
 // SQLITE ADAPTER — local-first StorageAdapter over libsql (file or :memory:)
@@ -54,10 +55,11 @@ export function normalizeSqliteUrl(input: string): string {
 
 // -- client + schema bootstrap ------------------------------------------------
 
-// open a libsql client (url: 'file:/path/uc.db' or ':memory:'), apply DDL once
+// open a libsql client (url: 'file:/path/uc.db' or ':memory:'), run pending
+// migrations (idempotent; stamps schema_migrations)
 export async function createSqliteAdapter(url: string): Promise<SqliteAdapter> {
     const client = createClient({ url: normalizeSqliteUrl(url) });
-    await client.executeMultiple(SCHEMA_SQL);
+    await migrateSqlite(client);
     return new SqliteAdapter(drizzle(client, { schema }));
 }
 

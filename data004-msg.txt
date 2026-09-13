@@ -1,0 +1,43 @@
+DATA-004: migration tooling for Postgres + SQLite
+
+The schema was defined three times (Drizzle types, apps/postgres/init.sql,
+SCHEMA_SQL in sqlite/schema.ts) with no versions and no way to change it
+after creation. Now a schema change is a reviewed, reversible migration.
+
+packages/storage/src/migrations/ (new):
+- Migration = { version, name, up: {postgres, sqlite}, down: {…} } — both
+  dialects side by side in one file so they can't drift apart silently
+- 0001_init.ts = the baseline (exact former init.sql / SCHEMA_SQL content,
+  fully idempotent per dialect → migrating a legacy database is a safe
+  no-op that stamps v1, data untouched)
+- registry.ts = ordered list + validateRegistry (strictly increasing
+  versions, both dialects required)
+- sqlite.ts / postgres.ts runners:
+  * schema_migrations bookkeeping table (version, name, applied_at)
+  * each migration runs in ONE transaction — DDL is transactional in both
+    dialects, so the schema change and its version stamp commit together;
+    a crash mid-migration cannot leave a half-applied state
+  * migrate*() idempotent; rollback*(client, toVersion) reverses down to
+    any version and hard-errors when an applied version is missing from
+    the registry (no silent drift from deleted migrations)
+
+Wiring:
+- createSqliteAdapter runs migrateSqlite on open (replaces the old
+  executeMultiple(SCHEMA_SQL)); SCHEMA_SQL kept as a deprecated export
+- createDbClient (direct Postgres/Drizzle path) auto-migrates on connect
+  (now async)
+- apps/postgres/init.sql stays the path for Supabase deployments (the REST
+  adapter can't run DDL) — regenerated with a "generated from the
+  registry" header and a schema_migrations bootstrap row
+- package export: @ultracontext/storage/migrations
+
+Tests: 12 new (storage 20 → 32, suite now 460 pass / 0 fail). Real
+in-memory SQLite covers fresh migrate, idempotency, legacy DB with data,
+full rollback round-trip, a second (0002-style) migration up+down, and the
+registry guard; the Postgres runner is validated via a mocked driver
+(transactional up SQL, no-op when current, rollback SQL, guard) — no live
+Postgres in CI yet.
+
+Storage test script fixed along the way: the old `src/**/*.test.ts` glob
+only expanded one directory level without globstar; it now passes both
+levels explicitly.

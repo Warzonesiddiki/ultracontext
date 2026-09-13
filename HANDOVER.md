@@ -223,12 +223,42 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   `workflows` permission) + branch protection on main (required status
   check = the CI job names).
 
+### DATA-004 — migration tooling (shipped last in this thread)
+
+- `packages/storage/src/migrations/` (new):
+  - `types.ts` — `Migration { version, name, up: {postgres, sqlite}, down: {…} }`
+  - `0001_init.ts` — the baseline; exact former `init.sql` / `SCHEMA_SQL`
+    content, per dialect, **all idempotent** (IF NOT EXISTS / CREATE OR
+    REPLACE) → migrating a legacy DB is a safe no-op that stamps v1
+  - `registry.ts` — ordered list + `validateRegistry` (strictly increasing
+    versions, both dialects required)
+  - `sqlite.ts` / `postgres.ts` — runners. Each migration runs in ONE
+    transaction (DDL is transactional in both dialects): schema change and
+    the `schema_migrations` stamp commit together. `migrate*()` idempotent;
+    `rollback*(client, toVersion)` reverses down to any version and hard-
+    errors if an applied version is missing from the registry.
+- **Wiring:** `createSqliteAdapter` → `migrateSqlite` on open (replaces
+  `executeMultiple(SCHEMA_SQL)`); `createDbClient` (direct Postgres) →
+  `migratePostgres` on connect (now async); `apps/postgres/init.sql` kept
+  for Supabase deploys (REST can't run DDL) with a "generated from the
+  registry" header + `schema_migrations` bootstrap row; `SCHEMA_SQL`
+  deprecated (export kept). Package export `@ultracontext/storage/migrations`.
+- **Storage test glob gotcha:** `src/**/*.test.ts` expands to one level
+  without globstar — the test script is now
+  `node --import tsx --test "src/*.test.ts" "src/*/*.test.ts"`.
+- 12 new tests (storage 20 → 32): real in-memory SQLite (fresh, idempotent,
+  legacy-with-data, rollback round-trip, second-migration up/down, registry
+  guard) + Postgres runner via mocked `Sql` (transactional up, no-op when
+  current, rollback SQL, registry guard). **No live Postgres in CI yet** —
+  the PG path is validated by the mock; add a PG service job when one is
+  available (see CI-001 promotion).
+
 ---
 ## 2. Test + typecheck baseline (current)
 
 ```
 packages/core        196 pass / 0 fail   (was 191; +5 PROM-002 version-on-append)
-packages/storage      20 pass / 0 fail
+packages/storage      32 pass / 0 fail   (was 20; +12 DATA-004 migrations)
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
 apps/js-sdk           50 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server, +2 SEC-004 perms)
 apps/sync             10 pass / 0 fail
@@ -236,7 +266,7 @@ apps/api              49 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 apps/python-sdk       20 pass / 0 fail   (NEW in CI-001: tests/test_client.py) + mypy strict clean
 ────────────────────────────────────
-total                448 pass / 0 fail
+total                460 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -259,11 +289,12 @@ appending one freebuff message appended **1** (incremental).
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
 (interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-004,
-CI-001 SHIPPED this thread), `README-REALITY-CHECK.md`.
+CI-001, DATA-004 SHIPPED this thread), `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value (plus the open-ended harness list):
-- **DATA-004/DATA-001**, **PROM-003** (switch docs + Linux/Windows).
+- **DATA-001** (real transactions on the Supabase adapter), **PROM-003**
+  (switch docs + Linux/Windows).
 - **CI promotion (admin actions):** grant `workflows` permission to the
   connected GitHub App → copy `docs/ci/ci.yml.pending` to
   `.github/workflows/ci.yml` → branch protection on main (required status

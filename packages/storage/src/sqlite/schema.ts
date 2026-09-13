@@ -39,7 +39,9 @@ export const nodes = sqliteTable('nodes', {
 
 export const schema = { projects, api_keys, nodes };
 
-// DDL applied on first open (no migration tooling yet — local file or :memory:)
+// DDL applied on first open — superseded by the migration tooling
+// (../migrations/0001_init.ts is the canonical baseline). Kept as an export
+// for compatibility; new code should go through migrateSqlite().
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

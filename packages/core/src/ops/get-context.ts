@@ -106,6 +106,7 @@ export async function getContext(
             ...n.content,
             id: n.public_id,
             index: i,
+            created_at: n.created_at,
             metadata: n.metadata,
         }));
         return ok({ data: sliced, version: currentVersion, ...(versionsResponse && { versions: versionsResponse }) });
@@ -116,6 +117,9 @@ export async function getContext(
         ...n.content,
         id: n.public_id,
         index,
+        // wall-clock creation time — lets clients discover ?before= targets
+        // and render when-each-message-arrived without extra round-trips
+        created_at: n.created_at,
         metadata: n.metadata,
     }));
 

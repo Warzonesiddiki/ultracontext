@@ -22,7 +22,7 @@ import {
   parseCursorLine, parseGeminiFile, parseOpencodeFile, parseAgyLine,
   parseFreebuffFile,
 } from "@ultracontext/parsers";
-import { boolFromEnv, expandHome, extractProjectPathFromFile, sha256, toInt } from "./utils.mjs";
+import { boolFromEnv, eventOccurredAt, expandHome, extractProjectPathFromFile, sha256, toInt } from "./utils.mjs";
 import {
   isPrimaryAgentSourceEnabled,
   matchesConfiguredProjectPath,
@@ -862,7 +862,7 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     const payload = {
       role: normalized.kind,
       content: { message: normalized.message, event_type: normalized.eventType, timestamp: normalized.timestamp, raw: safeRaw },
-      metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: normalized.sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset },
+      metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: normalized.sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset, occurred_at: eventOccurredAt(normalized.timestamp) },
     };
 
     await uc.append(sessionContextId, payload);
@@ -954,7 +954,7 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
         return {
           role: normalized.kind,
           content: { message: normalized.message, event_type: normalized.eventType, timestamp: normalized.timestamp, raw: safeRaw },
-          metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset },
+          metadata: { source: sourceName, host: cfg.host, user_id: cfg.userId, session_id: sessionId, event_id: eventId, file_path: filePath, file_offset: lineOffset, occurred_at: eventOccurredAt(normalized.timestamp) },
         };
       });
 

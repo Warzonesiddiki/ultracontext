@@ -84,11 +84,13 @@ export async function appendMessages(
             const versions = await getVersions(tx, root.public_id);
             const currentVersion = versions.length - 1;
 
-            // shape each created node: content + generated id + index + metadata
+            // shape each created node: content + generated id + index +
+            // wall-clock created_at (PROM-001) + metadata
             const data: MessageView[] = createdMessages.map((node, i: number) => ({
                 ...(node.content ?? {}),
                 id: node.public_id!,
                 index: existingCount + i,
+                created_at: node.created_at!,
                 metadata: node.metadata ?? {},
             }));
 

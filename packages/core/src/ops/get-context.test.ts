@@ -114,12 +114,13 @@ describe('getContext', () => {
 
     // -- head selection (default) ----------------------------------------------
 
-    it('returns the head messages ordered, with index/id/metadata and version', async () => {
+    it('returns the head messages ordered, with index/id/created_at/metadata and version', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
         const { rootId, messageIds } = await seedContext(storage, project!.id, {
             messages: [{ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' }],
         });
+        const createdAt = (id: string) => storage.getNodesByPublicId(id)!.created_at;
 
         const result = await getContext(storage, project!.id, rootId, {});
 
@@ -128,9 +129,33 @@ describe('getContext', () => {
         // single create version → version 0
         assert.equal(result.data.version, 0);
         assert.equal(result.data.data.length, 2);
-        // node order preserved + index/id/metadata spread
-        assert.deepEqual(result.data.data[0], { role: 'user', text: 'a', id: messageIds[0], index: 0, metadata: {} });
-        assert.deepEqual(result.data.data[1], { role: 'assistant', text: 'b', id: messageIds[1], index: 1, metadata: {} });
+        // node order preserved + index/id/created_at/metadata spread (PROM-001)
+        assert.deepEqual(result.data.data[0], { role: 'user', text: 'a', id: messageIds[0], index: 0, created_at: createdAt(messageIds[0]), metadata: {} });
+        assert.deepEqual(result.data.data[1], { role: 'assistant', text: 'b', id: messageIds[1], index: 1, created_at: createdAt(messageIds[1]), metadata: {} });
+    });
+
+    it('exposes created_at on every message so clients can discover ?before= (PROM-001)', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const { rootId, messageIds } = await seedContext(storage, project!.id, {
+            messages: [{ text: 'm0' }, { text: 'm1' }],
+        });
+        // deterministic, ordered wall-clock stamps
+        stampCreatedAt(storage, messageIds[0], '2026-01-01T00:00:00.000Z');
+        stampCreatedAt(storage, messageIds[1], '2026-01-02T00:00:00.000Z');
+
+        const result = await getContext(storage, project!.id, rootId, {});
+        assert.equal(result.ok, true);
+        assert.ok(result.ok);
+        // each message carries its own node created_at
+        assert.equal(result.data.data[0].created_at, '2026-01-01T00:00:00.000Z');
+        assert.equal(result.data.data[1].created_at, '2026-01-02T00:00:00.000Z');
+
+        // …and the at-slice path carries it too
+        const sliced = await getContext(storage, project!.id, rootId, { at: 0 });
+        assert.equal(sliced.ok, true);
+        assert.ok(sliced.ok);
+        assert.equal(sliced.data.data[0].created_at, '2026-01-01T00:00:00.000Z');
     });
 
     it('returns empty data with version 0 for a created-but-message-less head', async () => {

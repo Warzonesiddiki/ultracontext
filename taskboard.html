@@ -348,9 +348,9 @@ const T = [
  d:"No benchmarks exist for the append/read path — needed to validate the API-004 delta-storage work.",
  acc:"A reproducible benchmark for append, get, and update at realistic context sizes."}
 /* ── README PROMISE GAPS ─────────────────────────────────────────── */
-{id:"PROM-001",sev:"P1",ph:2,eff:"S",area:"Promise",t:"Expose created_at on MessageView + daemon metadata",
- file:"packages/core/src/ops/get-context.ts:113 · apps/sync/src/daemon.mjs:814",
- d:"MessageView maps {...content, id, index, metadata} — created_at is dropped, so clients cannot see when a message was created and cannot discover timestamps for ?before=. Daemon metadata carries no wall-clock time either. Time-travel works server-side but is unusable from the SDK.",
+{id:"PROM-001",sev:"P1",ph:2,eff:"S",area:"Promise",t:"Expose created_at on MessageView + daemon metadata — SHIPPED",
+ file:"packages/core/src/{message-view.ts,ops/get-context.ts,ops/append-messages.ts,ops/update-messages.ts,ops/delete-messages.ts} · apps/sync/src/{utils.mjs,daemon.mjs}",
+ d:"DONE. MessageView now carries created_at (ISO) on every message, in all five response builders: get-context (default + at-slice), append, update, and delete (the latter two switched from mapping input records to mapping the rows insertNodes returns, which is the only place the adapters' stamped wall-clock time is visible). The daemon adds occurred_at to per-message metadata (source event time from the parser — ISO or epoch-ms — falling back to ingestion time); the normaliser is exported from utils.mjs and unit-tested, including the V8 gotcha that new Date(\"1788256800000\") is Invalid Date so digit-strings route through Number(). ?before= is now client-discoverable: the created_at on each message is exactly the timestamp the server matches. core 228/228, sync 15/15, tsc clean.",
  acc:"created_at is on every message in the response and in daemon metadata; ?before= is discoverable from the client."},
 {id:"PROM-002",sev:"P1",ph:2,eff:"L",area:"Promise",t:"Version on append — the git model — SHIPPED",
  file:"packages/core/src/{context-chain.ts, storage.ts, testing/memory-adapter.ts, ops/{append-messages,get-context,update-messages,delete-messages,get-context-messages,create-context}.ts} · packages/storage/src/{sqlite/index.ts, drizzle.ts, supabase.ts} · apps/js-sdk/src/index.ts",

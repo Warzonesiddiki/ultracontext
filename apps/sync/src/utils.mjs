@@ -13,6 +13,23 @@ export function toInt(value, fallback) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+// Wall-clock time of an ingested event as recorded in its source file —
+// parsers normalise to ISO text or epoch ms. Falls back to ingestion time so
+// message metadata always carries a clock the client can trust (PROM-001).
+//
+// Epoch handling: `new Date(number)` treats a number as ms, but
+// `new Date("1788256800000")` (stringified digits) is Invalid in V8, so
+// digit-only strings must be routed through Number() explicitly.
+export function eventOccurredAt(timestamp) {
+  if (timestamp === undefined || timestamp === null || timestamp === "") return new Date().toISOString();
+  let d;
+  if (typeof timestamp === "number") d = new Date(timestamp);
+  else if (/^\d+$/.test(String(timestamp).trim())) d = new Date(Number(timestamp));
+  else d = new Date(String(timestamp));
+  if (!Number.isNaN(d.getTime())) return d.toISOString();
+  return new Date().toISOString();
+}
+
 export function boolFromEnv(value, fallback = false) {
   if (value === undefined) return fallback;
   const normalized = String(value).trim().toLowerCase();

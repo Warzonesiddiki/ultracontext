@@ -105,8 +105,9 @@ export async function updateMessages(
         content: {},
         metadata: { operation: 'update', affected: affectedIds, child_count: newNodes.length, ...(userMetadata ?? {}) },
     };
+    let created: Awaited<ReturnType<typeof storage.insertNodes>>;
     try {
-        await storage.insertNodes([headRecord, ...newNodes]);
+        created = await storage.insertNodes([headRecord, ...newNodes]);
     } catch {
         // stable message — the raw driver error is not useful to the caller
         return err('internal', 'Failed to update messages');
@@ -116,12 +117,14 @@ export async function updateMessages(
     const versions = await getVersions(storage, root.public_id);
     const currentVersion = versions.length - 1;
 
-    // project the copied nodes into the response shape
-    const result: MessageView[] = newNodes.map((n, index: number) => ({
+    // project the copied nodes into the response shape (created rows carry
+    // the wall-clock created_at the adapters stamped on insert — PROM-001)
+    const result: MessageView[] = created.filter((n) => n.public_id !== headRecord.public_id).map((n, index: number) => ({
         ...n.content,
-        id: n.public_id,
+        id: n.public_id!,
         index,
-        metadata: n.metadata,
+        created_at: n.created_at!,
+        metadata: n.metadata ?? {},
     }));
 
     return ok({ data: result, version: currentVersion });

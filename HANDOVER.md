@@ -14,8 +14,9 @@ and local — all features, no paywall, no telemetry, no network dependency.
 **PROM-002 (version on append — the git model)** and **SEC-002 (CORS
 allowlist)**, then SEC-004, CI-001, DATA-004, DATA-001, **PROM-003
 (`ultracontext switch` documented + cross-platform terminal launch +
-`--dry-run`)** and **SEC-003 (timing-safe secret comparison)** — see the
-notes below the table.
+`--dry-run`)**, **SEC-003 (timing-safe secret comparison)** and
+**SEC-005 (API key lifecycle + abuse throttling)** — see the notes below
+the table.
 
 UltraContext now ingests **9** sources, up from 6:
 
@@ -380,20 +381,58 @@ launcher; the real CLI is TypeScript (Bun) in `github.com/CodebuffAI/freebuff`:
   changed to `node --import tsx --test src/*.test.ts src/**/*.test.ts`.
   Verify new test files show up in `npm test` output.
 
+### SEC-005 — API key lifecycle + abuse throttling (shipped last in this thread)
+
+- **The gap:** a leaked key could never be invalidated (no revoke/rotate/
+  list), admin-token guessing was unthrottled, and — discovered while
+  testing — `ultracontext serve` was broken in every BUILT layout.
+- **Key lifecycle:**
+  - Core: `ops/key-lifecycle.ts` — `listKeys` / `revokeKey` / `rotateKey`
+    (rotate inserts the new row BEFORE deleting the old — fail safe).
+    `StorageAdapter` gained `listApiKeys` / `findApiKey` / `deleteApiKey`,
+    implemented on all 4 adapters (supabase's deleteApiKey is find-then-
+    delete — PostgREST can't report "no rows deleted" cheaply).
+  - API (admin token, now also on `/v1/keys/*`): `GET /v1/keys/:projectId`
+    (prefix/created/last_used — never the hash), `DELETE /v1/keys/:id`,
+    `POST /v1/keys/:id/rotate` (new key returned once; `old_prefix` kept
+    server-side for cache eviction only).
+  - **Immediate revocation:** row deleted + auth cache evicted
+    (`KeyCache.delete()` added; KV TTL cut 3600s → 60s as backstop).
+- **Abuse throttling:** the previously-unused `AUTH_FAILURE_PER_IP`
+  (20/min) is wired as a guard around the admin surface that charges ONLY
+  on actual 401s. keyCreate bucket: POST-only (list/revoke ride on the
+  per-IP backstop) with its own `keycreate:<ip>` key namespace.
+- **TWO REAL BUGS found & fixed while testing:**
+  1. `serve.mjs findApiPackage()` walked exactly 3 levels up from
+     `__dirname` — correct from `src/cli/`, wrong from the dist bundle
+     (chunks emit at `dist/`, 4 up) → `ultracontext serve` printed "needs
+     the context server package" in any built/published layout. Now a
+     walk-up to `<dir>/api/src/serve.ts`.
+  2. Rate-limiter buckets are keyed by the key STRING only (the limit is
+     not part of bucket identity) — keyCreate (10/min) and perIp (300/min)
+     shared the bare-IP bucket, so ordinary GET traffic ate the creation
+     budget. keyCreate now uses `keycreate:<ip>`.
+- **20 new tests:** 7 core ops, 3 real-SQLite adapter, 10 API lifecycle
+  (revoked-key-401-when-cached, rotate-old-dead, non-admin 401s, 400s,
+  429-by-attempt-21, successes-don't-consume-budget).
+- **Live E2E** on a real `ultracontext serve` (SQLite): use → list (no
+  hash) → non-admin 401 → revoke → **instant 401** → create → rotate
+  (new key 200, old key gone from list, no old_prefix leak).
+
 ---
 ## 2. Test + typecheck baseline (current)
 
 ```
-packages/core        212 pass / 0 fail   (was 191; +5 PROM-002, +10 DATA-001 crash-consistency, +6 SEC-003 secrets)
-packages/storage      32 pass / 0 fail   (was 20; +12 DATA-004 migrations)
+packages/core        219 pass / 0 fail   (was 191; +5 PROM-002, +10 DATA-001 crash-consistency, +6 SEC-003 secrets, +7 SEC-005 key-lifecycle)
+packages/storage      35 pass / 0 fail   (was 20; +12 DATA-004 migrations, +3 SEC-005 sqlite keys)
 packages/parsers      98 pass / 0 fail   (was 69; +29 new: opencode 19, agy 7, freebuff 7… see tests/parsers/)
 apps/js-sdk           67 pass / 0 fail   (was 30; +13 backup/gc, +5 local-server, +2 SEC-004 perms, +17 PROM-003 switch)
 apps/sync             10 pass / 0 fail
-apps/api              56 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests; +7 SEC-003 auth)
+apps/api              66 pass / 0 fail   (1 PROM-002 assertion updated; +11 CORS tests; +7 SEC-003 auth; +10 SEC-005 lifecycle)
 apps/mcp-server        5 pass / 0 fail   (new: src/config.test.ts)
 apps/python-sdk       20 pass / 0 fail   (NEW in CI-001: tests/test_client.py) + mypy strict clean
 ────────────────────────────────────
-total                500 pass / 0 fail
+total                520 pass / 0 fail
 ```
 `tsc --noEmit` clean for `packages/core`, `packages/storage`, `apps/api`,
 `apps/js-sdk` (js-sdk via `./node_modules/.bin/tsc --noEmit -p tsconfig.json` —
@@ -416,17 +455,16 @@ appending one freebuff message appended **1** (incremental).
 
 `AUDIT.md` (48 findings), `TASKS.md` (phased plan), `taskboard.html`
 (interactive, **64** tasks; FREE-006/007/008, PROM-002, SEC-002, SEC-003,
-SEC-004, CI-001, DATA-004, DATA-001, PROM-003 SHIPPED this thread;
+SEC-004, SEC-005, CI-001, DATA-004, DATA-001, PROM-003 SHIPPED this thread;
 TEST-001 + PROM-005 verified-already-done and marked),
 `README-REALITY-CHECK.md`.
 GitHub Issues are **disabled** on this repo (403) — local artifacts are the board.
 
 Next highest-value on the board (plus the open-ended harness list):
-- **SEC-005** (rate limiting + API key lifecycle — revoke/rotate/list),
-  then the P1 smalls: API-001 (validate `limit`), API-002 (strict integer
-  parsing), API-006 (body size cap), BUILD-001 (sync → workspace SDK),
-  BUILD-002 (mcp bin), DATA-002/003 (SQLite UNIQUE + FK cascade), PROM-001,
-  SEC-006 (deeper redaction).
+- The P1 smalls: API-001 (validate `limit`), API-002 (strict integer
+  parsing for version/at), API-006 (body size cap), BUILD-001 (sync →
+  workspace SDK), BUILD-002 (mcp bin), DATA-002/003 (SQLite UNIQUE + FK
+  cascade), PROM-001 (created_at on MessageView), SEC-006 (deeper redaction).
 - The harness candidates (Amp, Cline, Roo Code, Kilo Code, Windsurf, Zed,
   Aider, Goose, Crush, Droid/Factory, Continue, pi).
 - **CI promotion (admin actions):** grant `workflows` permission to the
@@ -479,6 +517,21 @@ Next highest-value on the board (plus the open-ended harness list):
   `git reset --mixed <remote-sha>` and re-commit the real delta. Untracked
   files (HANDOVER.md etc.) can also get reverted — re-verify content after
   any weird `git status`.
+- **Hono 4.10 response replacement:** after `await next()`, RETURNING a
+  new response from a middleware is IGNORED — assign `c.res = <response>`
+  (and set headers on that Response object directly). Cost real time in
+  SEC-005's auth-failure guard.
+- **Rate-limiter buckets are keyed by the key string only** — the limit is
+  NOT part of bucket identity, so two middlewares using the same key
+  (e.g. bare client IP) share one counter and each applies its own limit
+  to it. Use distinct key namespaces (`keycreate:<ip>`, `authfail:<ip>`).
+- **tsdown emits CLI subcommand chunks at `dist/` root**, while
+  `entry.mjs` lands in `dist/cli/` — any `__dirname`-relative path math in
+  a subcommand file breaks in the built layout (bit `serve.mjs`'s API
+  package lookup; fixed with a walk-up). Verify `__dirname` depth against
+  BOTH `src/cli/` and `dist/` when adding path logic.
+- **`pkill -f <pattern>` kills your own bash** when the pattern appears in
+  the command line — `pgrep -f` → `kill <pids>` instead.
 - **mcp-server runs from a built bundle:** `ultracontext-mcp` bin =
   `dist/stdio.mjs` (tsdown; config in `tsdown.config.ts`). Rebuild with
   `pnpm --filter ultracontext-mcp-server run build` after touching

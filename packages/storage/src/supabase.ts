@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { aggregateActivity } from '@ultracontext/core';
 import type { ActivityAggregateInput } from '@ultracontext/core';
 
@@ -305,6 +305,43 @@ export class SupabaseAdapter implements StorageAdapter {
             .update({ last_used_at: lastUsedAt })
             .eq('id', id);
         if (error) throw error;
+    }
+
+    // key lifecycle — listing never selects key_hash
+
+    private static readonly KEY_COLUMNS = 'id, project_id, key_prefix, name, created_at, last_used_at';
+
+    async listApiKeys(projectId: number): Promise<ApiKeyPublic[]> {
+        const { data, error } = await this.client
+            .from('api_keys')
+            .select(SupabaseAdapter.KEY_COLUMNS)
+            .eq('project_id', projectId)
+            .order('id');
+        if (error) throw error;
+        return data as ApiKeyPublic[];
+    }
+
+    async findApiKey(id: number): Promise<ApiKeyPublic | null> {
+        const { data, error } = await this.client
+            .from('api_keys')
+            .select(SupabaseAdapter.KEY_COLUMNS)
+            .eq('id', id)
+            .limit(1)
+            .single();
+        if (error && error.code === 'PGRST116') return null;
+        if (error) throw error;
+        return data as ApiKeyPublic;
+    }
+
+    // PostgREST cannot report "no rows deleted" without a representation
+    // round-trip, so check existence first. Two calls for an admin-only
+    // operation is an acceptable trade for an honest boolean.
+    async deleteApiKey(id: number): Promise<boolean> {
+        const existing = await this.findApiKey(id);
+        if (!existing) return false;
+        const { error } = await this.client.from('api_keys').delete().eq('id', id);
+        if (error) throw error;
+        return true;
     }
 
     // -- projects -------------------------------------------------------------

@@ -32,6 +32,9 @@ class MemKeyCache implements KeyCache {
     async put(prefix: string, value: CachedKey) {
         this.map.set(prefix, value);
     }
+    async delete(prefix: string) {
+        this.map.delete(prefix);
+    }
 }
 
 async function setupTestApp() {

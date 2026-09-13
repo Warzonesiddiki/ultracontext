@@ -97,5 +97,8 @@ export function registerAuthMiddleware(app: HttpApp, options?: AuthOptions) {
     app.use('/contexts', bearerAuthMiddleware(verifyToken));
     app.use('/contexts/*', bearerAuthMiddleware(verifyToken));
     app.use('/mcp', bearerAuthMiddleware(verifyToken));
+    // admin token on the whole lifecycle surface: create on the bare path,
+    // list/revoke/rotate on the subpaths
     app.use('/v1/keys', bearerAuthMiddleware(verifyAdminToken));
+    app.use('/v1/keys/*', bearerAuthMiddleware(verifyAdminToken));
 }

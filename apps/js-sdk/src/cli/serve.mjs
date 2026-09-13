@@ -36,9 +36,18 @@ function findApiPackage() {
         // fall through
     }
 
-    // 2 — monorepo: apps/js-sdk/src/cli → ../../../apps/api
-    const monorepo = path.resolve(__dirname, "..", "..", "..", "api");
-    if (fs.existsSync(path.join(monorepo, "src", "serve.ts"))) return monorepo;
+    // 2 — monorepo: walk up until we find <dir>/api/src/serve.ts.
+    // The depth is NOT fixed — from src this file lives at
+    // apps/js-sdk/src/cli (3 up) but the built bundle is emitted at
+    // apps/js-sdk/dist (4 up), and bundlers may relocate chunks again.
+    let dir = __dirname;
+    for (let i = 0; i < 8; i++) {
+        const candidate = path.join(dir, "api");
+        if (fs.existsSync(path.join(candidate, "src", "serve.ts"))) return candidate;
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
 
     return null;
 }

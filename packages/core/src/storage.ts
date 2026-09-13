@@ -40,6 +40,17 @@ export type ApiKeyRow = {
     key_hash: string;
 };
 
+// What a key-lifecycle caller may see. Never includes key_hash — the hash
+// is secret material and has no business in a listing response.
+export type ApiKeyPublic = {
+    id: number;
+    project_id: number;
+    key_prefix: string;
+    name: string | null;
+    created_at: string;
+    last_used_at: string | null;
+};
+
 export type ProjectRow = {
     id: number;
 };
@@ -149,6 +160,11 @@ export interface StorageAdapter {
     findApiKeyByPrefix(prefix: string): Promise<ApiKeyRow | null>;
     insertApiKey(values: { project_id: number; key_prefix: string; key_hash: string }): Promise<void>;
     updateApiKeyLastUsedAt(id: number, lastUsedAt: string): Promise<void>;
+    // key lifecycle — listing never exposes key_hash
+    listApiKeys(projectId: number): Promise<ApiKeyPublic[]>;
+    findApiKey(id: number): Promise<ApiKeyPublic | null>;
+    /** Delete a key row. Returns false if no such key exists. */
+    deleteApiKey(id: number): Promise<boolean>;
 
     // activity / analytics — server-side rollup of a project's write traffic.
     // Adapters aggregate in the database where possible; never throws for an

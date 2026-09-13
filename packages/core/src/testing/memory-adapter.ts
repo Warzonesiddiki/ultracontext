@@ -3,6 +3,7 @@ import type {
     NodeRow,
     NodeInsertRow,
     ApiKeyRow,
+    ApiKeyPublic,
     ProjectRow,
     ContextFilters,
     SearchFilters,
@@ -19,7 +20,15 @@ type StoredNode = NodeRow;
 
 export class MemoryStorage implements StorageAdapter {
     private nodes: StoredNode[] = [];
-    private keys: Array<{ id: number; project_id: number; key_prefix: string; key_hash: string }> = [];
+    private keys: Array<{
+        id: number;
+        project_id: number;
+        key_prefix: string;
+        key_hash: string;
+        name?: string;
+        created_at: string;
+        last_used_at?: string;
+    }> = [];
     private projectSeq = 0;
     private nodeSeq = 0;
 
@@ -169,10 +178,43 @@ export class MemoryStorage implements StorageAdapter {
     }
 
     async insertApiKey(values: { project_id: number; key_prefix: string; key_hash: string }) {
-        this.keys.push({ id: this.keys.length + 1, ...values });
+        this.keys.push({ id: this.keys.length + 1, created_at: new Date().toISOString(), ...values });
     }
 
     async updateApiKeyLastUsedAt(_id: number, _lastUsedAt: string) {}
+
+    async listApiKeys(projectId: number): Promise<ApiKeyPublic[]> {
+        return this.keys
+            .filter((k) => k.project_id === projectId)
+            .map((k) => ({
+                id: k.id,
+                project_id: k.project_id,
+                key_prefix: k.key_prefix,
+                name: k.name ?? null,
+                created_at: k.created_at,
+                last_used_at: k.last_used_at ?? null,
+            }));
+    }
+
+    async findApiKey(id: number): Promise<ApiKeyPublic | null> {
+        const k = this.keys.find((k) => k.id === id);
+        if (!k) return null;
+        return {
+            id: k.id,
+            project_id: k.project_id,
+            key_prefix: k.key_prefix,
+            name: k.name ?? null,
+            created_at: k.created_at,
+            last_used_at: k.last_used_at ?? null,
+        };
+    }
+
+    async deleteApiKey(id: number): Promise<boolean> {
+        const i = this.keys.findIndex((k) => k.id === id);
+        if (i === -1) return false;
+        this.keys.splice(i, 1);
+        return true;
+    }
 
     async insertProject(name: string): Promise<ProjectRow | null> {
         return { id: ++this.projectSeq };

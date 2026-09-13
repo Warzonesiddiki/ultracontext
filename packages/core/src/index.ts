@@ -9,6 +9,7 @@ export type {
     NodeRow,
     NodeInsertRow,
     ApiKeyRow,
+    ApiKeyPublic,
     ProjectRow,
     ContextFilters,
     SearchFilters,
@@ -82,6 +83,7 @@ export { createKey } from './ops/create-key';
 
 export { verifyKey, verifyKeyHash, hashToken } from './ops/verify-key';
 export type { VerifiedKey } from './ops/verify-key';
+export { listKeys, revokeKey, rotateKey } from './ops/key-lifecycle';
 
 // -- public ids ---------------------------------------------------------------
 

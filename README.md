@@ -320,6 +320,32 @@ ultracontext gc --keep 6mo --dry-run   # preview only, delete nothing
   `--dry-run` shows what would go, `--vacuum` reclaims the disk space.
   A good cron: `0 3 * * * ultracontext gc --keep 6mo`.
 
+### API key management
+
+Keys are listed, revoked and rotated over the API — a leaked key stops
+working within a minute. These are admin operations: they use the admin key
+(from `~/.ultracontext/server.json` with `ultracontext serve`), not the API
+keys themselves, so a leaked key can still be revoked.
+
+```bash
+ADMIN=$(jq -r .adminKey ~/.ultracontext/server.json)
+
+curl -H "Authorization: Bearer $ADMIN" \
+  "$ULTRACONTEXT_BASE_URL/v1/keys/<projectId>"          # list (prefix, created, last used — never the hash)
+
+curl -X DELETE -H "Authorization: Bearer $ADMIN" \
+  "$ULTRACONTEXT_BASE_URL/v1/keys/<keyId>"              # revoke — effective immediately
+
+curl -X POST -H "Authorization: Bearer $ADMIN" \
+  "$ULTRACONTEXT_BASE_URL/v1/keys/<keyId>/rotate"       # new key for the same project; old key revoked
+```
+
+Abuse protection is on by default and is **not** a paywall: 1000 req/min per
+API key, 300/min per IP, 10/min per IP for key creation/rotation, and
+20/min per IP on failed admin logins. Exceeding a limit returns `429` with a
+`Retry-After` — the response says so explicitly, because the obvious
+assumption is a quota. Self-hosters can disable it with `RATE_LIMIT_DISABLED=1`.
+
 ### No paywall, ever
 
 UltraContext is Apache-2.0 and self-hostable in full. Every capability — search,

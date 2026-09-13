@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { alias } from 'drizzle-orm/pg-core';
 
 import { nodes, api_keys, projects, type ApiDb } from './db';
@@ -240,6 +240,39 @@ export class DrizzleAdapter implements StorageAdapter {
             .update(api_keys)
             .set({ last_used_at: lastUsedAt })
             .where(eq(api_keys.id, id));
+    }
+
+    // key lifecycle — listing never selects key_hash
+    private static keyColumns = {
+        id: api_keys.id,
+        project_id: api_keys.project_id,
+        key_prefix: api_keys.key_prefix,
+        name: api_keys.name,
+        created_at: api_keys.created_at,
+        last_used_at: api_keys.last_used_at,
+    };
+
+    async listApiKeys(projectId: number): Promise<ApiKeyPublic[]> {
+        const rows = await this.db
+            .select(DrizzleAdapter.keyColumns)
+            .from(api_keys)
+            .where(eq(api_keys.project_id, projectId))
+            .orderBy(api_keys.id);
+        return rows as ApiKeyPublic[];
+    }
+
+    async findApiKey(id: number): Promise<ApiKeyPublic | null> {
+        const rows = await this.db
+            .select(DrizzleAdapter.keyColumns)
+            .from(api_keys)
+            .where(eq(api_keys.id, id))
+            .limit(1);
+        return (rows[0] as ApiKeyPublic) ?? null;
+    }
+
+    async deleteApiKey(id: number): Promise<boolean> {
+        const rows = await this.db.delete(api_keys).where(eq(api_keys.id, id)).returning({ id: api_keys.id });
+        return rows.length > 0;
     }
 
     // -- projects -------------------------------------------------------------

@@ -9,14 +9,10 @@
 // delete is best-effort — the KV TTL of 60s is the backstop if an eviction
 // write fails).
 
-import { createKey, listKeys, revokeKey, rotateKey, resultStatus, type ErrorCode } from '@ultracontext/core';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import type { HttpApp } from '../types/http';
+import { createKey, listKeys, revokeKey, rotateKey } from '@ultracontext/core';
+import type { HttpApp, HttpContext } from '../types/http';
+import { errorResponse } from '../http-error';
 import type { KeyCache } from '../cache/types';
-
-// -- error status (core code -> Hono-typed HTTP status) -----------------------
-
-const status = (code: ErrorCode) => resultStatus(code) as ContentfulStatusCode;
 
 function parseId(raw: string): number | null {
     const id = Number(raw);
@@ -42,45 +38,45 @@ export function registerKeyRoutes(app: HttpApp, options?: { keyCache?: KeyCache 
     const keyCache = options?.keyCache;
 
     // create key — parse body (default {} on bad JSON), call core, map Result
-    app.post('/v1/keys', async (c) => {
+    app.post('/v1/keys', async (c: HttpContext) => {
         const storage = c.get('storage');
         const body = await c.req.json().catch(() => ({}));
         const { name } = body;
 
         const result = await createKey(storage, name);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data);
     });
 
     // list a project's keys — never exposes the hash
-    app.get('/v1/keys/:projectId', async (c) => {
+    app.get('/v1/keys/:projectId', async (c: HttpContext) => {
         const projectId = parseId(c.req.param('projectId'));
-        if (projectId === null) return c.json({ error: 'projectId must be a positive integer' }, 400);
+        if (projectId === null) return c.json({ error: 'projectId must be a positive integer', code: 'invalid_input' }, 400);
 
         const result = await listKeys(c.get('storage'), projectId);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json({ project_id: projectId, keys: result.data });
     });
 
     // revoke — the leaked-key escape hatch
-    app.delete('/v1/keys/:id', async (c) => {
+    app.delete('/v1/keys/:id', async (c: HttpContext) => {
         const id = parseId(c.req.param('id'));
-        if (id === null) return c.json({ error: 'id must be a positive integer' }, 400);
+        if (id === null) return c.json({ error: 'id must be a positive integer', code: 'invalid_input' }, 400);
 
         const result = await revokeKey(c.get('storage'), id);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
 
         await evict(keyCache, result.data.prefix, 'revoked');
         return c.json({ revoked: true, id });
     });
 
     // rotate — fresh key for the same project, old key revoked
-    app.post('/v1/keys/:id/rotate', async (c) => {
+    app.post('/v1/keys/:id/rotate', async (c: HttpContext) => {
         const id = parseId(c.req.param('id'));
-        if (id === null) return c.json({ error: 'id must be a positive integer' }, 400);
+        if (id === null) return c.json({ error: 'id must be a positive integer', code: 'invalid_input' }, 400);
 
         const result = await rotateKey(c.get('storage'), id);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
 
         // evict BOTH the old key's cache entry and any entry the new key may
         // have populated (same project, fresh prefix)

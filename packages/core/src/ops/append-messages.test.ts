@@ -240,6 +240,98 @@ describe('appendMessages', () => {
         assert.equal(result.message, 'Failed to append messages');
     });
 
+    // -- tx failure classification (API-003) -----------------------------------
+
+    it('maps a Postgres SSI conflict (SQLSTATE 40001) to the retryable conflict code', async () => {
+        const storage = new MemoryStorage();
+
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        // SSI abort: the backend kills one side of the racing pair with 40001
+        const conflict = Object.assign(new Error('could not serialize access due to read/write dependencies among transactions'), {
+            code: '40001',
+        });
+        storage.transaction = async () => {
+            throw conflict;
+        };
+
+        const result = await appendMessages(storage, project!.id, rootId, { text: 'x' });
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.equal(result.code, 'conflict');
+        assert.match(result.message, /conflict/i);
+    });
+
+    it('maps a drizzle-wrapped SSI conflict (code on err.cause) to the conflict code', async () => {
+        const storage = new MemoryStorage();
+
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        // drizzle wraps the driver error — the 40001 code is on err.cause
+        const wrapped = Object.assign(new Error('Failed query: INSERT INTO nodes'), {
+            cause: Object.assign(new Error('could not serialize access'), { code: '40001' }),
+        });
+        storage.transaction = async () => {
+            throw wrapped;
+        };
+
+        const result = await appendMessages(storage, project!.id, rootId, { text: 'x' });
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.equal(result.code, 'conflict');
+    });
+
+    it('maps a non-retryable transaction failure to internal (not conflict)', async () => {
+        const storage = new MemoryStorage();
+
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        storage.transaction = async () => {
+            throw new Error('connection lost');
+        };
+
+        const result = await appendMessages(storage, project!.id, rootId, { text: 'x' });
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.equal(result.code, 'internal');
+        assert.equal(result.message, 'Failed to append messages');
+    });
+
+    it('logs the underlying transaction error instead of swallowing it', async () => {
+        const storage = new MemoryStorage();
+
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        const conflict = Object.assign(new Error('could not serialize access'), { code: '40001' });
+        storage.transaction = async () => {
+            throw conflict;
+        };
+
+        // capture console.error — the raw driver error must reach the log
+        const originalError = console.error;
+        const logged: unknown[] = [];
+        console.error = (...args: unknown[]) => {
+            logged.push(args);
+        };
+        try {
+            const result = await appendMessages(storage, project!.id, rootId, { text: 'x' });
+            assert.equal(result.ok, false);
+        } finally {
+            console.error = originalError;
+        }
+
+        // the original error object (with its 40001 code) was logged
+        const flat = logged.flat();
+        assert.ok(flat.includes(conflict), 'expected the raw transaction error to be logged');
+    });
+
     // -- transaction: append runs under serializable isolation ----------------
 
     it('invokes the storage transaction with serializable isolation', async () => {

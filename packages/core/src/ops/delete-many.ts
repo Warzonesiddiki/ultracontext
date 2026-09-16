@@ -5,10 +5,11 @@
 import { MAX_BATCH_DELETE } from '../constants';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
+import { isRetryableTxError } from '../tx-errors';
 
 // -- result shape -------------------------------------------------------------
 
-export type DeleteResult = { id: string; deleted: boolean; error?: string };
+export type DeleteResult = { id: string; deleted: boolean; error?: string; retryable?: boolean };
 
 export type DeleteManyResult = { results: DeleteResult[]; deleted_count: number };
 
@@ -74,8 +75,15 @@ export async function deleteManyContexts(
             await storage.transaction((tx) => permanentlyDelete(tx, projectId, root.public_id), { isolationLevel: 'serializable' });
             results.push({ id: contextId, deleted: true });
         } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown error';
-            results.push({ id: contextId, deleted: false, error: message });
+            // Log, don't swallow (API-003); the per-item error surfaces in
+            // the 207 body, retryable SSI conflicts flagged for the client.
+            console.error(`deleteManyContexts: transaction failed for ${contextId}`, error);
+            if (isRetryableTxError(error)) {
+                results.push({ id: contextId, deleted: false, error: 'Concurrent write conflict — retry the request', retryable: true });
+            } else {
+                const message = error instanceof Error ? error.message : 'Unknown error';
+                results.push({ id: contextId, deleted: false, error: message });
+            }
         }
     }
 

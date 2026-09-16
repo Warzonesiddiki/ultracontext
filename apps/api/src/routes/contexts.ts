@@ -9,16 +9,15 @@ import {
     isPlainObject,
     listContexts,
     parseLimit,
-    resultStatus,
     updateMessages,
     searchMessages,
     type ContextFilters,
-    type ErrorCode,
 } from '@ultracontext/core';
 import type { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import type { AppEnv, HttpApp } from '../types/http';
+import type { AppEnv, HttpApp, HttpContext } from '../types/http';
+import { RETRY_AFTER_SECONDS, errorResponse } from '../http-error';
 
 // -- request-body ceiling ------------------------------------------------------
 // 8 MiB: far beyond any legitimate single message (agent file pastes top out
@@ -28,33 +27,29 @@ import type { AppEnv, HttpApp } from '../types/http';
 const MAX_JSON_BODY_BYTES = 8 * 1024 * 1024;
 const jsonBodyLimit = bodyLimit({ maxSize: MAX_JSON_BODY_BYTES });
 
-// -- error status (core code -> Hono-typed HTTP status) -----------------------
-
-const status = (code: ErrorCode) => resultStatus(code) as ContentfulStatusCode;
-
 // -- routes -------------------------------------------------------------------
 
 export function registerContextRoutes(app: HttpApp) {
     // create context — parse body (default {} on bad JSON), call core, map Result
-    app.post('/contexts', async (c) => {
+    app.post('/contexts', async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const body = await c.req.json().catch(() => ({}));
 
         const result = await createContext(storage, projectId, body);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data, 201);
     });
 
     // list contexts — parse query params + filters, call core listContexts
-    app.get('/contexts', async (c) => {
+    app.get('/contexts', async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         // strict parse: ?limit=abc → 400 (not NaN into .limit()); out-of-range
         // is clamped into [1, 100]; absent → default 20
         const rawLimit = c.req.query('limit');
         const limit = rawLimit === undefined ? 20 : parseLimit(rawLimit, 1, 100);
-        if (limit === null) return c.json({ error: 'limit must be a positive integer' }, 400);
+        if (limit === null) return c.json({ error: 'limit must be a positive integer', code: 'invalid_input' }, 400);
 
         // metadata + timestamp filters
         const filters: ContextFilters & { limit?: number } = { limit };
@@ -71,11 +66,11 @@ export function registerContextRoutes(app: HttpApp) {
         if (projectPath) filters.project_path = projectPath;
         if (sessionId) filters.session_id = sessionId;
         if (after) {
-            if (isNaN(Date.parse(after))) return c.json({ error: 'Invalid after timestamp' }, 400);
+            if (isNaN(Date.parse(after))) return c.json({ error: 'Invalid after timestamp', code: 'invalid_input' }, 400);
             filters.after = after;
         }
         if (before) {
-            if (isNaN(Date.parse(before))) return c.json({ error: 'Invalid before timestamp' }, 400);
+            if (isNaN(Date.parse(before))) return c.json({ error: 'Invalid before timestamp', code: 'invalid_input' }, 400);
             filters.before = before;
         }
 
@@ -86,7 +81,7 @@ export function registerContextRoutes(app: HttpApp) {
     // -- full-text search (must be registered before :id routes) ----------------
 
     // Search is free and unmetered — UltraContext has no query quota and no paywall.
-    app.get('/contexts/search', async (c) => {
+    app.get('/contexts/search', async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const query = c.req.query('q') ?? '';
@@ -106,7 +101,7 @@ export function registerContextRoutes(app: HttpApp) {
             before: c.req.query('before') ?? undefined,
         });
 
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data);
     });
 
@@ -116,24 +111,24 @@ export function registerContextRoutes(app: HttpApp) {
     // tier sells analytics and gates "unlimited analytics" behind Pro — there is
     // nothing to unlock here and no history window that silently truncates.
     //   GET /contexts/stats?bucket=day|week|month&days=30&from=…&to=…&source=…
-    app.get('/contexts/stats', async (c) => {
+    app.get('/contexts/stats', async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
 
         const bucket = c.req.query('bucket') ?? 'day';
         if (bucket !== 'day' && bucket !== 'week' && bucket !== 'month') {
-            return c.json({ error: `Invalid bucket '${bucket}'. Use day, week or month.` }, 400);
+            return c.json({ error: `Invalid bucket '${bucket}'. Use day, week or month.`, code: 'invalid_input' }, 400);
         }
 
         const from = c.req.query('from');
         const to = c.req.query('to');
-        if (from !== undefined && isNaN(Date.parse(from))) return c.json({ error: 'Invalid from timestamp' }, 400);
-        if (to !== undefined && isNaN(Date.parse(to))) return c.json({ error: 'Invalid to timestamp' }, 400);
+        if (from !== undefined && isNaN(Date.parse(from))) return c.json({ error: 'Invalid from timestamp', code: 'invalid_input' }, 400);
+        if (to !== undefined && isNaN(Date.parse(to))) return c.json({ error: 'Invalid to timestamp', code: 'invalid_input' }, 400);
 
         const daysRaw = c.req.query('days');
         const days = daysRaw === undefined ? undefined : parseInt(daysRaw);
         if (daysRaw !== undefined && (isNaN(days as number) || (days as number) < 1)) {
-            return c.json({ error: 'Invalid days value' }, 400);
+            return c.json({ error: 'Invalid days value', code: 'invalid_input' }, 400);
         }
 
         const result = await getProjectActivity(storage, projectId, {
@@ -144,28 +139,38 @@ export function registerContextRoutes(app: HttpApp) {
             source: c.req.query('source') ?? undefined,
         });
 
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data);
     });
 
     // -- delete-many contexts (must be registered before :id routes) -----------
 
     // delete-many — parse body (must be JSON object), call core, compute status
-    app.post('/contexts/delete-many', async (c) => {
+    app.post('/contexts/delete-many', async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const body = await c.req.json().catch(() => null);
 
-        if (!isPlainObject(body)) return c.json({ error: 'Request body must be a JSON object' }, 400);
+        if (!isPlainObject(body)) return c.json({ error: 'Request body must be a JSON object', code: 'invalid_input' }, 400);
 
         const { ids } = body;
         const result = await deleteManyContexts(storage, projectId, ids as string[]);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
 
-        // 207 Multi-Status when partial failure; 500 if every item failed
-        const { deleted_count } = result.data;
-        const total = result.data.results.length;
-        const httpStatus = deleted_count === 0 ? 500 : deleted_count === total ? 200 : 207;
+        // 207 Multi-Status when partial failure; 500 if every item failed —
+        // unless EVERY failure was a transient SSI conflict, in which case the
+        // whole batch is retryable verbatim: 409 + Retry-After (API-003).
+        const { results, deleted_count } = result.data;
+        const total = results.length;
+        let httpStatus: ContentfulStatusCode;
+        if (deleted_count === 0) {
+            httpStatus = results.every((r) => r.retryable === true) ? 409 : 500;
+        } else if (deleted_count === total) {
+            httpStatus = 200;
+        } else {
+            httpStatus = 207;
+        }
+        if (httpStatus === 409) c.header('Retry-After', String(RETRY_AFTER_SECONDS));
         return c.json(result.data, httpStatus);
     });
 
@@ -176,19 +181,19 @@ export function registerContextRoutes(app: HttpApp) {
     const hono = app as unknown as Hono<AppEnv>;
 
     // append messages — parse JSON body (no catch, matches prior behavior)
-    hono.post('/contexts/:id', jsonBodyLimit, async (c) => {
+    hono.post('/contexts/:id', jsonBodyLimit, async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
         const body = (await c.req.json()) as object | object[];
 
         const result = await appendMessages(storage, projectId, contextPublicId, body);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data, 201);
     });
 
     // get context — parse query selectors, call core, map Result
-    app.get('/contexts/:id', async (c) => {
+    app.get('/contexts/:id', async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
@@ -201,12 +206,12 @@ export function registerContextRoutes(app: HttpApp) {
         };
 
         const result = await getContext(storage, projectId, contextPublicId, opts);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data);
     });
 
     // update messages — parse JSON body (null on bad JSON -> 400), call core
-    hono.patch('/contexts/:id', jsonBodyLimit, async (c) => {
+    hono.patch('/contexts/:id', jsonBodyLimit, async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
@@ -218,19 +223,19 @@ export function registerContextRoutes(app: HttpApp) {
             body = await c.req.json();
         } catch (error) {
             if (error instanceof Error && error.name === 'BodyLimitError') throw error;
-            return c.json({ error: 'Invalid JSON body' }, 400);
+            return c.json({ error: 'Invalid JSON body', code: 'invalid_input' }, 400);
         }
-        if (body === null || body === undefined) return c.json({ error: 'Invalid JSON body' }, 400);
+        if (body === null || body === undefined) return c.json({ error: 'Invalid JSON body', code: 'invalid_input' }, 400);
 
         const result = await updateMessages(storage, projectId, contextPublicId, body as object);
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data);
     });
 
     // -- delete context or messages -----------------------------------------------
 
     // delete — disambiguate permanent-delete vs message-delete from the body shape
-    app.delete('/contexts/:id', async (c) => {
+    app.delete('/contexts/:id', async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
@@ -244,7 +249,7 @@ export function registerContextRoutes(app: HttpApp) {
             try {
                 body = await c.req.json();
             } catch {
-                return c.json({ error: 'Invalid JSON body' }, 400);
+                return c.json({ error: 'Invalid JSON body', code: 'invalid_input' }, 400);
             }
         }
 
@@ -256,7 +261,7 @@ export function registerContextRoutes(app: HttpApp) {
 
         // Reject ambiguous bodies that combine both — forces the caller to pick one
         if (isExplicitPermanent && hasIds) {
-            return c.json({ error: 'Cannot combine "permanent" and "ids" in the same request — pick one' }, 400);
+            return c.json({ error: 'Cannot combine "permanent" and "ids" in the same request — pick one', code: 'invalid_input' }, 400);
         }
 
         // permanent delete — no body / {} / {permanent: true}; echo optional audit metadata
@@ -268,14 +273,14 @@ export function registerContextRoutes(app: HttpApp) {
             }
 
             const result = await deleteContextPermanent(storage, projectId, contextPublicId, { auditMetadata });
-            if (!result.ok) return c.json({ error: result.message }, status(result.code));
+            if (!result.ok) return errorResponse(c, result);
             return c.json(result.data);
         }
 
         // From here, body must have `ids` for message-delete path
-        if (!isPlainObject(body)) return c.json({ error: 'Request body must be a JSON object' }, 400);
+        if (!isPlainObject(body)) return c.json({ error: 'Request body must be a JSON object', code: 'invalid_input' }, 400);
         if (!hasIds) {
-            return c.json({ error: 'Body must contain "ids" (delete messages) or {"permanent": true} (delete entire context)' }, 400);
+            return c.json({ error: 'Body must contain "ids" (delete messages) or {"permanent": true} (delete entire context)', code: 'invalid_input' }, 400);
         }
 
         // message delete — pass ids + optional metadata to core (core validates shapes)
@@ -284,7 +289,7 @@ export function registerContextRoutes(app: HttpApp) {
             ids: ids as (string | number)[],
             userMetadata: userMetadata as Record<string, unknown> | undefined,
         });
-        if (!result.ok) return c.json({ error: result.message }, status(result.code));
+        if (!result.ok) return errorResponse(c, result);
         return c.json(result.data);
     });
 }

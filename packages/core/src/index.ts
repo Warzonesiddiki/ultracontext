@@ -111,3 +111,7 @@ export { firstRow } from './first-row';
 
 export { ok, err, resultStatus } from './result';
 export type { ErrorCode, Result } from './result';
+
+// -- transaction failure classification ----------------------------------------
+
+export { isRetryableTxError } from './tx-errors';

@@ -342,3 +342,48 @@ describe('deleteManyContexts — failures and partial results', () => {
         assert.ok(result.data.results.every((r) => r.deleted === false && r.error === 'nope'));
     });
 });
+
+// -- tx failure classification (API-003) ----------------------------------------
+
+describe('deleteManyContexts — SSI conflicts', () => {
+    it('flags every item retryable when every delete hits an SSI conflict', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const a = await seedContext(storage, project!.id, {});
+        const b = await seedContext(storage, project!.id, {});
+
+        const conflict = Object.assign(new Error('could not serialize access'), { code: '40001' });
+        storage.transaction = async () => {
+            throw conflict;
+        };
+
+        const result = await deleteManyContexts(storage, project!.id, [a.rootId, b.rootId]);
+
+        assert.equal(result.ok, true);
+        assert.equal(result.data.deleted_count, 0);
+        assert.deepEqual(result.data.results, [
+            { id: a.rootId, deleted: false, error: 'Concurrent write conflict — retry the request', retryable: true },
+            { id: b.rootId, deleted: false, error: 'Concurrent write conflict — retry the request', retryable: true },
+        ]);
+    });
+
+    it('only flags the conflicted item in a mixed failure (not-found + conflict)', async () => {
+        const storage = new MemoryStorage();
+        const project = await storage.insertProject('test');
+        const a = await seedContext(storage, project!.id, {});
+
+        const conflict = Object.assign(new Error('could not serialize access'), { code: '40001' });
+        storage.transaction = async () => {
+            throw conflict;
+        };
+
+        const result = await deleteManyContexts(storage, project!.id, [a.rootId, 'ctx_missing']);
+
+        assert.equal(result.ok, true);
+        assert.equal(result.data.results[0].deleted, false);
+        assert.equal(result.data.results[0].retryable, true);
+        assert.equal(result.data.results[1].deleted, false);
+        assert.equal(result.data.results[1].error, 'Not found');
+        assert.equal(result.data.results[1].retryable, undefined);
+    });
+});

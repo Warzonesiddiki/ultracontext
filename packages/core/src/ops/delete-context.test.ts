@@ -165,6 +165,29 @@ describe('deleteContextPermanent', () => {
         assert.equal(result.message, 'Failed to delete context');
     });
 
+    // -- tx failure classification (API-003) -----------------------------------
+
+    it('maps an SSI conflict (SQLSTATE 40001) to the retryable conflict code', async () => {
+        const storage = new MemoryStorage();
+
+        const project = await storage.insertProject('test');
+        const { rootId } = await seedContext(storage, project!.id);
+
+        // the append-vs-delete race: SSI aborts this tx with 40001
+        const conflict = Object.assign(new Error('could not serialize access due to read/write dependencies among transactions'), {
+            code: '40001',
+        });
+        storage.transaction = async () => {
+            throw conflict;
+        };
+
+        const result = await deleteContextPermanent(storage, project!.id, rootId, {});
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.equal(result.code, 'conflict');
+        assert.match(result.message, /conflict/i);
+    });
+
     // -- tx semantics: runs inside a serializable transaction -----------------
 
     it('runs permanentlyDelete inside a serializable transaction', async () => {

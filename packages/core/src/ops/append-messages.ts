@@ -7,6 +7,7 @@ import { generatePublicId } from '../public-ids';
 import type { MessageView } from '../message-view';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
+import { isRetryableTxError } from '../tx-errors';
 
 // -- intermediate tx outcome --------------------------------------------------
 // Mirrors the handler: the serializable tx returns either the success payload
@@ -96,8 +97,13 @@ export async function appendMessages(
 
             return { data, version: currentVersion };
         }, { isolationLevel: 'serializable' });
-    } catch {
-        // any tx failure collapses to a single internal error
+    } catch (error) {
+        // Log, don't swallow: the raw driver error only survives in the
+        // server log; the client gets a stable, classifiable response.
+        // SSI conflicts (SQLSTATE 40001) are retryable — 409 + Retry-After
+        // at the route (API-003).
+        console.error('appendMessages: transaction failed', error);
+        if (isRetryableTxError(error)) return err('conflict', 'Concurrent write conflict — retry the request');
         return err('internal', 'Failed to append messages');
     }
 

@@ -5,6 +5,7 @@
 
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
+import { isRetryableTxError } from '../tx-errors';
 
 // -- permanent-delete helper --------------------------------------------------
 
@@ -62,7 +63,13 @@ export async function deleteContextPermanent(
         await storage.transaction((tx) => permanentlyDelete(tx, projectId, root.public_id), { isolationLevel: 'serializable' });
         return ok({ deleted: true, id: contextId, ...(auditMetadata ? { metadata: auditMetadata } : {}) });
     } catch (error) {
-        // tx failure -> 500 -> internal, preserving the thrown message verbatim
+        // Log, don't swallow (API-003): the raw driver error only survives in
+        // the server log; the client gets a stable, classifiable response.
+        console.error('deleteContextPermanent: transaction failed', error);
+        // SSI conflict (SQLSTATE 40001) racing with an append is retryable —
+        // the route maps `conflict` to 409 + Retry-After.
+        if (isRetryableTxError(error)) return err('conflict', 'Concurrent write conflict — retry the request');
+        // other tx failure -> 500 -> internal, preserving the thrown message verbatim
         const message = error instanceof Error ? error.message : 'Failed to delete context';
         return err('internal', message);
     }

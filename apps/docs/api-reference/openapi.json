@@ -449,6 +449,22 @@
               }
             }
           },
+          "409": {
+            "description": "Retryable conflict — this write raced with a concurrent write on the same context (database serialization conflict). The response carries a `Retry-After` header; wait that many seconds and retry the request verbatim.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the request verbatim",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Context not found",
             "content": {
@@ -622,6 +638,22 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Retryable conflict — the permanent delete raced with a concurrent write on the same context (database serialization conflict). The response carries a `Retry-After` header; wait that many seconds and retry the request verbatim.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the request verbatim",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -680,6 +712,20 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "Every item failed with a retryable serialization conflict (each item is flagged `retryable: true`). The response carries a `Retry-After` header; wait that many seconds and retry the request verbatim.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the request verbatim",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeleteManyResponse" }
               }
             }
           },
@@ -981,7 +1027,7 @@
       },
       "DeleteManyResponse": {
         "type": "object",
-        "description": "Status 200 when all succeeded, 207 (Multi-Status) on partial failure, 500 when every item failed.",
+        "description": "Status 200 when all succeeded, 207 (Multi-Status) on partial failure, 409 when every item failed with a retryable serialization conflict (Retry-After header), 500 when every item failed otherwise.",
         "properties": {
           "results": {
             "type": "array",
@@ -990,7 +1036,8 @@
               "properties": {
                 "id": { "type": "string", "description": "Context ID" },
                 "deleted": { "type": "boolean", "description": "Whether the context was deleted" },
-                "error": { "type": "string", "description": "Error message if deletion failed" }
+                "error": { "type": "string", "description": "Error message if deletion failed" },
+                "retryable": { "type": "boolean", "description": "True when the failure was a transient serialization conflict — retry the item verbatim after the Retry-After delay" }
               }
             }
           },
@@ -1006,6 +1053,11 @@
           "error": {
             "type": "string",
             "description": "Error message"
+          },
+          "code": {
+            "type": "string",
+            "enum": ["not_found", "invalid_input", "conflict", "internal"],
+            "description": "Machine-readable error code. `conflict` is retryable — the response also carries a `Retry-After` header; wait that many seconds and retry the request verbatim."
           }
         }
       }

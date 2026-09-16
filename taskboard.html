@@ -245,9 +245,9 @@ const T = [
  file:"apps/api/src/routes/ · apps/docs/api-reference/openapi.json",
  d:"Routes do ad-hoc c.req.json() with body:any casts. zod is already a dependency but only apps/mcp-server uses it. openapi.json is hand-maintained and free to drift.",
  acc:"@hono/zod-validator on every route; openapi.json generated from the schemas so docs cannot drift."},
-{id:"API-003",sev:"P1",ph:3,eff:"S",area:"API",t:"Surface retryable failures",
- file:"packages/core/src/ops/append-messages.ts:70",
- d:"Any tx failure collapses to err('internal') → flat 500. The comment says Postgres SSI makes one side fail with 40001 and 'client retries', but there is no 409, no Retry-After, and no machine-readable code.",
+{id:"API-003",sev:"P1",ph:3,eff:"S",area:"API",t:"Surface retryable failures — SHIPPED",
+ file:"packages/core/src/ops/append-messages.ts:70 · packages/core/src/tx-errors.ts · apps/api/src/http-error.ts",
+ d:"DONE. Tx failures no longer collapse to a flat 500: (1) core gained a 'conflict' ErrorCode mapped to 409 in resultStatus(); (2) new packages/core/src/tx-errors.ts classifies retryable transaction failures by walking the driver error chain (drizzle puts the real error on err.cause) — pg SQLSTATE 40001 (SSI) and 40P01 (deadlock), SQLITE_BUSY, plus a pg 40001 message fallback for drivers that drop the code property; a bounded walk guard terminates circular cause references; (3) the three serializable-tx ops — appendMessages, deleteContextPermanent, deleteManyContexts — now console.error the raw driver error (logged, not swallowed) and return conflict for retryable failures (delete-many additionally flags the affected per-item result with retryable:true); (4) new shared apps/api/src/http-error.ts errorResponse(): every API error body is now machine-readable {error, code}, and conflict responses carry Retry-After: 1; (5) the delete-many route returns 409 + Retry-After when EVERY item failed with a conflict (a mixed or otherwise all-failed batch stays 500, 207 is unchanged); (6) openapi.json synced: Error schema gains the code enum, 409 + Retry-After documented on POST /contexts/{id}, DELETE /contexts/{id} and POST /contexts/delete-many, DeleteManyResponse items gain retryable. Verified: core 253/253 (was 228: +12 tx-errors, +6 result, +4 append, +1 delete-context, +2 delete-many), api 83/83 (was 76: +7 HTTP-layer conflict tests incl. header/body/no-write-integrity assertions), JS total 568/568, python-sdk 20/20 + mypy strict clean, tsc clean (core/storage/api/js-sdk).",
  acc:"A 'conflict' ErrorCode → HTTP 409 + Retry-After; the underlying error is logged, not swallowed."},
 {id:"API-004",sev:"P1",ph:3,eff:"L",area:"API",t:"Cap context size; plan delta storage",
  file:"packages/core/src/ops/update-messages.ts:118-140",
@@ -346,7 +346,7 @@ const T = [
 {id:"MISC-004",sev:"P3",ph:4,eff:"M",area:"Tests",t:"Add performance benchmarks",
  file:"new",
  d:"No benchmarks exist for the append/read path — needed to validate the API-004 delta-storage work.",
- acc:"A reproducible benchmark for append, get, and update at realistic context sizes."}
+ acc:"A reproducible benchmark for append, get, and update at realistic context sizes."},
 /* ── README PROMISE GAPS ─────────────────────────────────────────── */
 {id:"PROM-001",sev:"P1",ph:2,eff:"S",area:"Promise",t:"Expose created_at on MessageView + daemon metadata — SHIPPED",
  file:"packages/core/src/{message-view.ts,ops/get-context.ts,ops/append-messages.ts,ops/update-messages.ts,ops/delete-messages.ts} · apps/sync/src/{utils.mjs,daemon.mjs}",

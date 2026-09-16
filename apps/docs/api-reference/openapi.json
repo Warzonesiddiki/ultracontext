@@ -395,10 +395,10 @@
       },
       "post": {
         "summary": "Append messages",
-        "description": "Append one or more messages to the context.",
+        "description": "Append one or more messages to the context. Each append creates a new version. Limits: at most 1,000 messages per append and 10,000 messages per context — exceeding either returns 400 with code `invalid_input`.",
         "operationId": "appendMessages",
         "x-mint": {
-          "content": "<Info>Appends do **not** create a new version of the context. This happens because the `at` parameter on the GET endpoint is enough to retrieve previous states by index.</Info>\n\n<Warning>`index` is a reserved field. The `metadata` field is extracted and stored at the message level—it won't appear as a regular content field.</Warning>"
+          "content": "<Info>Every append creates a **new version** of the context, so `?version=N` and `?at=…` on the GET endpoint are meaningful for append-only sessions too.</Info>\n\n<Warning>`index` is a reserved field. The `metadata` field is extracted and stored at the message level—it won't appear as a regular content field.</Warning>"
         },
         "x-codeSamples": [
           {

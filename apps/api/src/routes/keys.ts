@@ -10,8 +10,11 @@
 // write fails).
 
 import { createKey, listKeys, revokeKey, rotateKey } from '@ultracontext/core';
-import type { HttpApp, HttpContext } from '../types/http';
+import type { Hono } from 'hono';
+import type { AppEnv, HttpApp, HttpContext } from '../types/http';
 import { errorResponse } from '../http-error';
+import { jsonV, paramV } from '../middleware/validate';
+import { CreateKeySchema, KeyIdParamSchema, KeyProjectParamSchema } from '../schemas';
 import type { KeyCache } from '../cache/types';
 
 function parseId(raw: string): number | null {
@@ -36,9 +39,11 @@ async function evict(keyCache: KeyCache | undefined, prefix: string, what: strin
 
 export function registerKeyRoutes(app: HttpApp, options?: { keyCache?: KeyCache }) {
     const keyCache = options?.keyCache;
+    // route-level middleware (zod validators) needs the real Hono type
+    const hono = app as unknown as Hono<AppEnv>;
 
-    // create key — parse body (default {} on bad JSON), call core, map Result
-    app.post('/v1/keys', async (c: HttpContext) => {
+    // create key — zod-gated body, call core, map Result
+    hono.post('/v1/keys', jsonV(CreateKeySchema), async (c: HttpContext) => {
         const storage = c.get('storage');
         const body = await c.req.json().catch(() => ({}));
         const { name } = body;
@@ -49,7 +54,7 @@ export function registerKeyRoutes(app: HttpApp, options?: { keyCache?: KeyCache 
     });
 
     // list a project's keys — never exposes the hash
-    app.get('/v1/keys/:projectId', async (c: HttpContext) => {
+    hono.get('/v1/keys/:projectId', paramV(KeyProjectParamSchema), async (c: HttpContext) => {
         const projectId = parseId(c.req.param('projectId'));
         if (projectId === null) return c.json({ error: 'projectId must be a positive integer', code: 'invalid_input' }, 400);
 
@@ -59,7 +64,7 @@ export function registerKeyRoutes(app: HttpApp, options?: { keyCache?: KeyCache 
     });
 
     // revoke — the leaked-key escape hatch
-    app.delete('/v1/keys/:id', async (c: HttpContext) => {
+    hono.delete('/v1/keys/:id', paramV(KeyIdParamSchema), async (c: HttpContext) => {
         const id = parseId(c.req.param('id'));
         if (id === null) return c.json({ error: 'id must be a positive integer', code: 'invalid_input' }, 400);
 
@@ -71,7 +76,7 @@ export function registerKeyRoutes(app: HttpApp, options?: { keyCache?: KeyCache 
     });
 
     // rotate — fresh key for the same project, old key revoked
-    app.post('/v1/keys/:id/rotate', async (c: HttpContext) => {
+    hono.post('/v1/keys/:id/rotate', paramV(KeyIdParamSchema), async (c: HttpContext) => {
         const id = parseId(c.req.param('id'));
         if (id === null) return c.json({ error: 'id must be a positive integer', code: 'invalid_input' }, 400);
 

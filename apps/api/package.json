@@ -7,13 +7,15 @@
         "test": "node --import tsx --test src/tests/**/*.test.ts",
         "test:watch": "node --import tsx --test --watch src/tests/**/*.test.ts",
         "check": "tsc --noEmit",
+        "openapi:generate": "tsx scripts/generate-openapi.mts",
         "serve": "tsx src/serve.ts"
     },
     "dependencies": {
         "@hono/node-server": "^1.19.6",
+        "@hono/zod-validator": "^0.9.1",
+        "@modelcontextprotocol/sdk": "^1.27.1",
         "@ultracontext/core": "workspace:*",
         "@ultracontext/storage": "workspace:*",
-        "@modelcontextprotocol/sdk": "^1.27.1",
         "dotenv": "^17.2.3",
         "hono": "^4.10.7",
         "ultracontext-mcp-server": "workspace:*",

@@ -18,6 +18,18 @@ import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { AppEnv, HttpApp, HttpContext } from '../types/http';
 import { RETRY_AFTER_SECONDS, errorResponse } from '../http-error';
+import { jsonV, optionalJsonV, queryV } from '../middleware/validate';
+import {
+    AppendInputSchema,
+    CreateContextSchema,
+    DeleteInputSchema,
+    DeleteManySchema,
+    GetContextQuerySchema,
+    ListContextsQuerySchema,
+    SearchQuerySchema,
+    StatsQuerySchema,
+    UpdateBodySchema,
+} from '../schemas';
 
 // -- request-body ceiling ------------------------------------------------------
 // 8 MiB: far beyond any legitimate single message (agent file pastes top out
@@ -30,8 +42,13 @@ const jsonBodyLimit = bodyLimit({ maxSize: MAX_JSON_BODY_BYTES });
 // -- routes -------------------------------------------------------------------
 
 export function registerContextRoutes(app: HttpApp) {
-    // create context — parse body (default {} on bad JSON), call core, map Result
-    app.post('/contexts', async (c: HttpContext) => {
+    // The minimal HttpApp type doesn't express route-level middleware; the
+    // real Hono instance (createApp returns Hono<AppEnv>) does. Every route
+    // below registers its zod validator (API-009) before the handler.
+    const hono = app as unknown as Hono<AppEnv>;
+
+    // create context — zod-gated body, call core, map Result
+    hono.post('/contexts', optionalJsonV(CreateContextSchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const body = await c.req.json().catch(() => ({}));
@@ -41,8 +58,8 @@ export function registerContextRoutes(app: HttpApp) {
         return c.json(result.data, 201);
     });
 
-    // list contexts — parse query params + filters, call core listContexts
-    app.get('/contexts', async (c: HttpContext) => {
+    // list contexts — zod-gated query, call core listContexts
+    hono.get('/contexts', queryV(ListContextsQuerySchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         // strict parse: ?limit=abc → 400 (not NaN into .limit()); out-of-range
@@ -81,7 +98,7 @@ export function registerContextRoutes(app: HttpApp) {
     // -- full-text search (must be registered before :id routes) ----------------
 
     // Search is free and unmetered — UltraContext has no query quota and no paywall.
-    app.get('/contexts/search', async (c: HttpContext) => {
+    hono.get('/contexts/search', queryV(SearchQuerySchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const query = c.req.query('q') ?? '';
@@ -111,7 +128,7 @@ export function registerContextRoutes(app: HttpApp) {
     // tier sells analytics and gates "unlimited analytics" behind Pro — there is
     // nothing to unlock here and no history window that silently truncates.
     //   GET /contexts/stats?bucket=day|week|month&days=30&from=…&to=…&source=…
-    app.get('/contexts/stats', async (c: HttpContext) => {
+    hono.get('/contexts/stats', queryV(StatsQuerySchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
 
@@ -146,7 +163,7 @@ export function registerContextRoutes(app: HttpApp) {
     // -- delete-many contexts (must be registered before :id routes) -----------
 
     // delete-many — parse body (must be JSON object), call core, compute status
-    app.post('/contexts/delete-many', async (c: HttpContext) => {
+    hono.post('/contexts/delete-many', jsonV(DeleteManySchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const body = await c.req.json().catch(() => null);
@@ -176,12 +193,8 @@ export function registerContextRoutes(app: HttpApp) {
 
     // -- parameterized :id routes ------------------------------------------------
 
-    // The minimal HttpApp type doesn't express route-level middleware; the
-    // real Hono instance (createApp returns Hono<AppEnv>) does.
-    const hono = app as unknown as Hono<AppEnv>;
-
-    // append messages — parse JSON body (no catch, matches prior behavior)
-    hono.post('/contexts/:id', jsonBodyLimit, async (c: HttpContext) => {
+    // append messages — zod-gated body, call core, map Result
+    hono.post('/contexts/:id', jsonBodyLimit, jsonV(AppendInputSchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
@@ -192,8 +205,8 @@ export function registerContextRoutes(app: HttpApp) {
         return c.json(result.data, 201);
     });
 
-    // get context — parse query selectors, call core, map Result
-    app.get('/contexts/:id', async (c: HttpContext) => {
+    // get context — zod-gated query selectors, call core, map Result
+    hono.get('/contexts/:id', queryV(GetContextQuerySchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
@@ -210,8 +223,8 @@ export function registerContextRoutes(app: HttpApp) {
         return c.json(result.data);
     });
 
-    // update messages — parse JSON body (null on bad JSON -> 400), call core
-    hono.patch('/contexts/:id', jsonBodyLimit, async (c: HttpContext) => {
+    // update messages — zod-gated body, call core, map Result
+    hono.patch('/contexts/:id', jsonBodyLimit, jsonV(UpdateBodySchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');
@@ -234,8 +247,10 @@ export function registerContextRoutes(app: HttpApp) {
 
     // -- delete context or messages -----------------------------------------------
 
-    // delete — disambiguate permanent-delete vs message-delete from the body shape
-    app.delete('/contexts/:id', async (c: HttpContext) => {
+    // delete — zod-gates the body shape, then disambiguates permanent-delete
+    // vs message-delete (the ambiguous permanent+ids 400 and the legacy
+    // empty-{} tolerance stay in the handler)
+    hono.delete('/contexts/:id', optionalJsonV(DeleteInputSchema), async (c: HttpContext) => {
         const { projectId } = c.get('auth');
         const storage = c.get('storage');
         const contextPublicId = c.req.param('id');

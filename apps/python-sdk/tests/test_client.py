@@ -21,7 +21,13 @@ from ultracontext import (
 
 
 class FakeResponse:
-    def __init__(self, status_code: int, body: Any = None, text: Optional[str] = None):
+    def __init__(
+        self,
+        status_code: int,
+        body: Any = None,
+        text: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ):
         self.status_code = status_code
         self._body = body
         if text is not None:
@@ -29,6 +35,9 @@ class FakeResponse:
         else:
             self._content = b"" if body is None else json.dumps(body).encode("utf-8")
         self.text = text if text is not None else ("" if body is None else json.dumps(body))
+        # httpx.Headers lookups are case-insensitive — normalise to lowercase
+        # so `headers.get("retry-after")` works like it does on a real response
+        self.headers = {str(k).lower(): v for k, v in (headers or {}).items()}
 
     @property
     def is_success(self) -> bool:
@@ -50,9 +59,16 @@ class FakeClient:
     last_request: Optional[Dict[str, Any]] = None
     queued: List[FakeResponse] = [FakeResponse(200, {})]
     init_kwargs: Dict[str, Any] = {}
+    instances: int = 0
+    calls: List[str] = []
+    request_errors: List[BaseException] = []
 
     def __init__(self, *args: Any, **kwargs: Any):
         FakeClient.init_kwargs = kwargs
+        FakeClient.instances += 1
+
+    def close(self) -> None:
+        return None
 
     def __enter__(self) -> "FakeClient":
         return self
@@ -62,6 +78,9 @@ class FakeClient:
 
     def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         FakeClient.last_request = {"method": method, "url": url, **kwargs}
+        FakeClient.calls.append(f"{method} {url}")
+        if FakeClient.request_errors:
+            raise FakeClient.request_errors.pop(0)
         return FakeClient.queued.pop(0) if FakeClient.queued else FakeResponse(200, {})
 
 
@@ -72,8 +91,14 @@ class FakeAsyncClient(FakeClient):
     async def __aexit__(self, *exc: Any) -> None:
         return None
 
+    async def aclose(self) -> None:
+        return None
+
     async def request(self, method: str, url: str, **kwargs: Any) -> FakeResponse:
         FakeClient.last_request = {"method": method, "url": url, **kwargs}
+        FakeClient.calls.append(f"{method} {url}")
+        if FakeClient.request_errors:
+            raise FakeClient.request_errors.pop(0)
         return FakeClient.queued.pop(0) if FakeClient.queued else FakeResponse(200, {})
 
 
@@ -81,6 +106,9 @@ class FakeAsyncClient(FakeClient):
 def _reset() -> None:
     FakeClient.last_request = None
     FakeClient.queued = [FakeResponse(200, {})]
+    FakeClient.instances = 0
+    FakeClient.calls = []
+    FakeClient.request_errors = []
 
 
 def client(base_url: str = "http://127.0.0.1:8787", api_key: str = "uc_live_test") -> UltraContext:
@@ -505,3 +533,192 @@ async def test_async_delete_validation_raises_without_request() -> None:
         with pytest.raises(ValueError):
             await c.delete("abc")
     assert FakeClient.last_request is None  # validation happens before any HTTP
+
+
+# ── resilience: persistent client, retries, Retry-After (SDK-001) ──
+
+def test_client_reuse_across_requests_and_recreated_after_close() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        c = client()
+        c.get("abc")
+        c.get("def")
+        assert FakeClient.instances == 1  # one httpx client for both calls
+        c.close()
+        c.get("ghi")
+        assert FakeClient.instances == 2  # a fresh one after close()
+
+
+def test_client_context_manager_closes() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        with client() as c:
+            c.get("abc")
+            assert FakeClient.instances == 1
+        # exiting the context manager closed the underlying client; the
+        # next request transparently recreates it
+        with client() as c2:
+            c2.get("abc")
+        assert FakeClient.instances == 2
+
+
+def test_5xx_retried_on_get_with_backoff_then_succeeds() -> None:
+    FakeClient.queued = [FakeResponse(500, {"error": "boom", "code": "internal"}), FakeResponse(200, {"ok": True})]
+    sleeps: List[float] = []
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep", side_effect=sleeps.append):
+        out = client().get("abc")
+    assert out == {"ok": True}
+    assert len(FakeClient.calls) == 2  # one retry, then success
+    assert len(sleeps) == 1
+    assert 0.25 <= sleeps[0] <= 0.5  # first backoff: base 0.5s, jittered [0.25, 0.5]
+
+
+def test_429_retried_on_post_and_honours_retry_after_header() -> None:
+    # 429 means "wait and retry" for every method — even append
+    FakeClient.queued = [
+        FakeResponse(429, {"error": "rate limited", "code": "rate_limited"}, headers={"Retry-After": "2"}),
+        FakeResponse(200, {"ok": True}),
+    ]
+    sleeps: List[float] = []
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep", side_effect=sleeps.append):
+        out = client().append("abc", {"role": "user", "content": "hi"})
+    assert out == {"ok": True}
+    assert len(FakeClient.calls) == 2
+    assert sleeps == [2.0]  # server-specified wait wins over the backoff curve
+
+
+def test_429_honours_retry_after_body_field() -> None:
+    FakeClient.queued = [
+        FakeResponse(429, {"error": "slow down", "code": "rate_limited", "retry_after_sec": 7}),
+        FakeResponse(200, {}),
+    ]
+    sleeps: List[float] = []
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep", side_effect=sleeps.append):
+        client().append("abc", {"role": "user", "content": "hi"})
+    assert sleeps == [7.0]  # no Retry-After header → 429 body's retry_after_sec
+
+
+def test_429_honours_retry_after_http_date() -> None:
+    from datetime import datetime, timedelta
+
+    now = datetime.now()
+    date = (now + timedelta(seconds=5)).strftime("%a, %d %b %Y %H:%M:%S GMT")
+    FakeClient.queued = [FakeResponse(429, None, headers={"Retry-After": date}), FakeResponse(200, {})]
+    sleeps: List[float] = []
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep", side_effect=sleeps.append):
+        client().get("abc")
+    assert 3.0 <= sleeps[0] <= 7.0  # ≈ 5 seconds, tolerant of test runtime
+
+
+def test_5xx_not_retried_on_post() -> None:
+    # non-idempotent POST must not be blindly retried (double-append risk)
+    FakeClient.queued = [FakeResponse(500, {"error": "boom", "code": "internal"})]
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep") as sleep:
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().append("abc", {"role": "user", "content": "x"})
+    assert excinfo.value.status == 500
+    assert len(FakeClient.calls) == 1
+    sleep.assert_not_called()
+
+
+def test_retries_exhausted_raises_after_max_attempts() -> None:
+    # queue a 500 for every attempt the client might make — the harness
+    # falls back to 200 on an empty queue, which would mask over-eager retries
+    FakeClient.queued = [FakeResponse(500, {"error": "boom", "code": "internal"}) for _ in range(4)]
+    sleeps: List[float] = []
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep", side_effect=sleeps.append):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().get("abc")
+    assert excinfo.value.status == 500
+    assert len(FakeClient.calls) == 4  # initial + 3 retries (default max_retries=3)
+    assert len(sleeps) == 3
+    # exponential growth with jitter: each wait's upper bound doubles
+    assert 0.25 <= sleeps[0] <= 0.5
+    assert 0.5 <= sleeps[1] <= 1.0
+    assert 1.0 <= sleeps[2] <= 2.0
+
+
+def test_max_retries_zero_disables_retries() -> None:
+    FakeClient.queued = [FakeResponse(500, {"error": "boom", "code": "internal"})]
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep") as sleep:
+        with pytest.raises(UltraContextHttpError):
+            UltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787", max_retries=0).get("abc")
+    assert len(FakeClient.calls) == 1
+    sleep.assert_not_called()
+
+
+def test_409_conflict_not_retried() -> None:
+    # SSI conflicts are caller-handled (body exposes Retry-After + retryable)
+    FakeClient.queued = [
+        FakeResponse(409, {"error": "Concurrent write conflict — retry the request", "code": "conflict"}),
+    ]
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep") as sleep:
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().append("abc", {"role": "user", "content": "x"})
+    assert excinfo.value.status == 409
+    assert len(FakeClient.calls) == 1
+    sleep.assert_not_called()
+
+
+def test_accepted_statuses_never_retried() -> None:
+    # delete_many accepts 500 by contract (per-item failures) → no blind retry
+    body = {"results": [{"id": "a", "deleted": False, "error": "boom"}], "deleted_count": 0}
+    FakeClient.queued = [FakeResponse(500, body)]
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep") as sleep:
+        out = client().delete_many(["a"])
+    assert out == body
+    assert len(FakeClient.calls) == 1
+    sleep.assert_not_called()
+
+
+def test_transport_error_retried_on_get() -> None:
+    FakeClient.request_errors = [httpx.ConnectError("connection refused")]
+    with mock.patch("httpx.Client", FakeClient), mock.patch("time.sleep") as sleep:
+        out = client().get("abc")
+    assert out == {}
+    assert len(FakeClient.calls) == 2
+    sleep.assert_called_once()
+
+
+def test_transport_error_not_retried_on_post() -> None:
+    FakeClient.request_errors = [httpx.ConnectError("connection refused")]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(httpx.ConnectError):
+            client().append("abc", {"role": "user", "content": "x"})
+    assert len(FakeClient.calls) == 1
+
+
+async def test_async_client_reuse_and_5xx_retry() -> None:
+    FakeClient.queued = [FakeResponse(500, {"error": "boom", "code": "internal"}), FakeResponse(200, {"ok": True})]
+    sleeps: List[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    FakeClient.queued.append(FakeResponse(200, {"ok": True}))  # for the post-close call
+    FakeClient.queued.append(FakeResponse(200, {"ok": True}))
+    with mock.patch("httpx.AsyncClient", FakeAsyncClient), mock.patch("asyncio.sleep", side_effect=fake_sleep):
+        c = AsyncUltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787")
+        out = await c.get("abc")
+        out2 = await c.get("abc")
+        await c.close()
+        out3 = await c.get("abc")
+    assert out == out2 == out3 == {"ok": True}
+    assert FakeClient.instances == 2  # shared client, recreated after close
+    assert len(sleeps) == 1 and sleeps[0] > 0
+
+
+async def test_async_429_honours_retry_after_header() -> None:
+    FakeClient.queued = [
+        FakeResponse(429, {"error": "rate limited", "code": "rate_limited"}, headers={"Retry-After": "1"}),
+        FakeResponse(200, {"ok": True}),
+    ]
+    sleeps: List[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    with mock.patch("httpx.AsyncClient", FakeAsyncClient), mock.patch("asyncio.sleep", side_effect=fake_sleep):
+        c = AsyncUltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787")
+        out = await c.append("abc", {"role": "user", "content": "hi"})
+    assert out == {"ok": True}
+    assert len(FakeClient.calls) == 2
+    assert sleeps == [1.0]

@@ -318,8 +318,30 @@ export function registerContextRoutes(app: HttpApp) {
 
         // permanent delete — no body / {} / {permanent: true}; echo optional audit metadata
         if (!hasJsonBody || isEmptyBody || isExplicitPermanent) {
-            // Optional audit metadata logged at infra level (permanent delete wipes history)
             const auditMetadata = isPlainObject(body) && isPlainObject(body.metadata) ? body.metadata : undefined;
+
+            // Durable audit record BEFORE the irreversible wipe (API-011).
+            // Fail closed: if the record cannot be persisted, the delete does
+            // not happen — an unwitnessed wipe is worse than a failed delete.
+            try {
+                await c.get('auditSink').record({
+                    ts: new Date().toISOString(),
+                    event: 'permanent_delete',
+                    request_id: c.get('requestId'),
+                    project_id: projectId,
+                    context_id: contextPublicId,
+                    ...(auditMetadata !== undefined && { metadata: auditMetadata }),
+                });
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                console.error(`permanent delete aborted for ${contextPublicId}: audit record failed: ${message}`);
+                return c.json(
+                    { error: `Failed to write the durable audit record — nothing was deleted (${message})`, code: 'internal' },
+                    500
+                );
+            }
+
+            // Operational log (the durable record above is the source of truth)
             if (auditMetadata) {
                 console.info(JSON.stringify({ op: 'permanent_delete', request_id: c.get('requestId'), project_id: projectId, context_id: contextPublicId, metadata: auditMetadata }));
             }

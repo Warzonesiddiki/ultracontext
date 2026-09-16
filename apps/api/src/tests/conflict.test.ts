@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { generateKey, hashKey, KEY_PREFIX_LEN } from '@ultracontext/core';
 import { MemoryStorage } from '@ultracontext/core/testing';
 import { createApp } from '../app';
+import { InMemoryAuditSink } from '../audit/permanent-delete';
 import type { ApiConfig } from '../types/api';
 import { RETRY_AFTER_SECONDS } from '../http-error';
 
@@ -36,7 +37,8 @@ function pgConflict(): Error {
 
 async function setupTestApp() {
     const storage = new MemoryStorage();
-    const app = createApp({ config: TEST_CONFIG, storage });
+    // in-memory audit sink keeps the suite hermetic (no real FS trail)
+    const app = createApp({ config: TEST_CONFIG, storage, auditSink: new InMemoryAuditSink() });
 
     // create project + API key
     const project = await storage.insertProject('test');

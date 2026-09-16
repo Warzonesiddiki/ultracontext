@@ -753,9 +753,9 @@ curl -X PATCH https://api.ultracontext.ai/contexts/ctx_abc123 \\
                 operationId: 'deleteContextOrMessages',
                 summary: 'Delete messages or the entire context',
                 description:
-                    'Send a body with `ids` to soft-delete specific messages (creates a new version, prior versions retain the messages). Send no body OR `{"permanent": true}` to permanently delete the entire context (irreversible).',
+                    'Send a body with `ids` to soft-delete specific messages (creates a new version, prior versions retain the messages). Send no body OR `{"permanent": true}` to permanently delete the entire context (irreversible). A permanent delete first writes a durable, append-only audit record to a local JSONL file (`$ULTRACONTEXT_AUDIT_LOG`, else beside the SQLite file / `~/.ultracontext/`) and fails closed — if the record cannot be persisted, nothing is deleted (500).',
                 mintContent:
-                    '<Tip>Send `{"ids": [...]}` to delete specific messages (soft, versioned). Send `{"permanent": true}` to delete the entire context (hard, irreversible).</Tip>\n\n<Info>Include `metadata` to record why this deletion was made. Optional, but recommended for audit trail.</Info>',
+                    '<Tip>Send `{"ids": [...]}` to delete specific messages (soft, versioned). Send `{"permanent": true}` to delete the entire context (hard, irreversible).</Tip>\n\n<Info>Include `metadata` to record why this deletion was made. It is echoed in the response and written to the durable local audit trail before the wipe — nothing is deleted unless the record is persisted.</Info>',
                 codeSamples: [
                     {
                         lang: 'typescript',
@@ -856,6 +856,9 @@ curl -X DELETE https://api.ultracontext.ai/contexts/ctx_abc123 \\
                     409: errorRef(
                         'Retryable conflict — the permanent delete raced with a concurrent write on the same context (database serialization conflict). The response carries a `Retry-After` header; wait that many seconds and retry the request verbatim.',
                         { headers: conflictHeaders }
+                    ),
+                    500: errorRef(
+                        'Permanent delete aborted: the durable audit record could not be persisted — nothing was deleted (fail closed)'
                     ),
                 },
             },

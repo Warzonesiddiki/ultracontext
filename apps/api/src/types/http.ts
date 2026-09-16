@@ -7,6 +7,8 @@ export type AppVariables = {
     auth: Auth;
     storage: StorageAdapter;
     config: ApiConfig;
+    /** request correlation id (API-008) — set by the request-id middleware */
+    requestId: string;
 };
 
 export type AppEnv = {

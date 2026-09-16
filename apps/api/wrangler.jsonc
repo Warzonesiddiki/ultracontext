@@ -8,7 +8,7 @@
         "DATABASE_PROVIDER": "supabase"
     },
     "observability": {
-        "enabled": false,
+        "enabled": true,
         "traces": { "enabled": true }
     },
     "workers_dev": false,

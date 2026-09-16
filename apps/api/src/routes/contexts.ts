@@ -269,7 +269,7 @@ export function registerContextRoutes(app: HttpApp) {
             // Optional audit metadata logged at infra level (permanent delete wipes history)
             const auditMetadata = isPlainObject(body) && isPlainObject(body.metadata) ? body.metadata : undefined;
             if (auditMetadata) {
-                console.info(JSON.stringify({ op: 'permanent_delete', project_id: projectId, context_id: contextPublicId, metadata: auditMetadata }));
+                console.info(JSON.stringify({ op: 'permanent_delete', request_id: c.get('requestId'), project_id: projectId, context_id: contextPublicId, metadata: auditMetadata }));
             }
 
             const result = await deleteContextPermanent(storage, projectId, contextPublicId, { auditMetadata });

@@ -11,6 +11,7 @@ import { registerContextRoutes } from './routes/contexts';
 import { registerKeyRoutes } from './routes/keys';
 import { registerMcpRoutes } from './routes/mcp';
 import { registerRootRoutes } from './routes/root';
+import { registerRequestObservability } from './middleware/request-id';
 import type { StorageAdapter } from '@ultracontext/core';
 import type { ApiConfig } from './types/api';
 import type { AppEnv, HttpMiddleware } from './types/http';
@@ -38,6 +39,9 @@ export function createApp(options: AppOptions) {
     const limiter: RateLimiter | null = disabled ? null : (options.rateLimiter ?? new MemoryRateLimiter());
     const skip = () => limiter === null;
 
+    // request id + access log run first: every downstream middleware and
+    // route sees the id, and the log line spans the full request
+    registerRequestObservability(app);
     app.use('*', corsMiddleware);
     app.use('*', databaseMiddleware(options.storage, options.config));
 

@@ -325,11 +325,13 @@ export class UltraContext {
     }
 
     async deleteMany(ids: string[]): Promise<DeleteManyResponse> {
-        // 200 (all ok), 207 (partial), 500 (all failed) all carry a results body — surface directly.
+        // 200 (all ok), 207 (partial), 409 (every item failed with a retryable
+        // serialization conflict — Retry-After header), 500 (all failed) all
+        // carry a results body — surface directly, never throw for these.
         return this.request<DeleteManyResponse>('/contexts/delete-many', {
             method: 'POST',
             body: { ids },
-            acceptStatuses: [200, 207, 500],
+            acceptStatuses: [200, 207, 409, 500],
         });
     }
 

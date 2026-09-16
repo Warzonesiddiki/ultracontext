@@ -88,6 +88,7 @@ class DeleteManyResult(TypedDict, total=False):
     id: str
     deleted: bool
     error: Optional[str]
+    retryable: bool
 
 
 class DeleteManyResponse(TypedDict, total=False):

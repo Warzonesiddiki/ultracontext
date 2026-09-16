@@ -278,13 +278,15 @@ class UltraContext(_BaseClient):
         """
         Delete multiple contexts permanently (max 100).
 
-        Status 200 = all succeeded, 207 = partial, 500 = all failed. All three carry a
-        results body; this method surfaces the body instead of raising.
+        Status 200 = all succeeded, 207 = partial, 409 = every item failed with a
+        retryable serialization conflict (Retry-After header — wait, then retry the
+        request verbatim), 500 = all failed otherwise. All four carry a results
+        body; this method surfaces the body instead of raising.
 
         Args:
             ids: List of context IDs to delete
         """
-        return self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 500])
+        return self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 409, 500])
 
 
 class AsyncUltraContext(_BaseClient):
@@ -471,5 +473,5 @@ class AsyncUltraContext(_BaseClient):
         return await self._request("DELETE", f"/contexts/{quote(context_id, safe='')}", json=body)
 
     async def delete_many(self, ids: List[str]) -> DeleteManyResponse:
-        """Delete multiple contexts permanently (max 100). 200/207/500 all carry a results body."""
-        return await self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 500])
+        """Delete multiple contexts permanently (max 100). 200/207/409/500 all carry a results body."""
+        return await self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 409, 500])

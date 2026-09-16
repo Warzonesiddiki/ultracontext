@@ -49,9 +49,10 @@ class FakeClient:
 
     last_request: Optional[Dict[str, Any]] = None
     queued: List[FakeResponse] = [FakeResponse(200, {})]
+    init_kwargs: Dict[str, Any] = {}
 
     def __init__(self, *args: Any, **kwargs: Any):
-        pass
+        FakeClient.init_kwargs = kwargs
 
     def __enter__(self) -> "FakeClient":
         return self
@@ -257,3 +258,236 @@ async def test_async_error_raises() -> None:
             await c.create()
     assert excinfo.value.status == 500
     assert excinfo.value.body == "boom"
+
+
+# ── get(): list mode + every selector ────────────────────────────
+
+def test_get_list_mode_no_limit_sends_no_params() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().get()
+    assert last()["method"] == "GET"
+    assert last()["url"] == "http://127.0.0.1:8787/contexts"
+    assert last()["params"] is None
+
+
+def test_get_list_mode_with_limit() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().get(limit=10)
+    assert last()["params"] == {"limit": 10}
+
+
+def test_get_single_sends_all_selectors() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().get("abc", version=2, at=7, before="2026-01-01T00:00:00Z", history=True)
+    assert last()["params"] == {
+        "version": 2,
+        "at": 7,
+        "before": "2026-01-01T00:00:00Z",
+        "history": True,
+    }
+
+
+# ── response body handling ───────────────────────────────────────
+
+def test_success_returns_parsed_json() -> None:
+    FakeClient.queued = [FakeResponse(201, {"id": "ctx_1", "created_at": "2026-01-01T00:00:00Z"})]
+    with mock.patch("httpx.Client", FakeClient):
+        out = client().create()
+    assert out == {"id": "ctx_1", "created_at": "2026-01-01T00:00:00Z"}
+
+
+def test_200_with_empty_body_returns_none() -> None:
+    # success with no content — e.g. an adapter that sends an empty 200
+    FakeClient.queued = [FakeResponse(200, None, text="")]
+    with mock.patch("httpx.Client", FakeClient):
+        assert client().get("abc") is None
+
+
+# ── error mapping (API error contract: {error, code}) ────────────
+
+def test_error_carries_machine_readable_code_from_api() -> None:
+    FakeClient.queued = [FakeResponse(404, {"error": "Context not found", "code": "not_found"})]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().get("missing")
+    err = excinfo.value
+    assert err.status == 404
+    assert json.loads(err.body) == {"error": "Context not found", "code": "not_found"}
+    assert "404" in str(err)
+
+
+def test_400_invalid_input_raises() -> None:
+    FakeClient.queued = [FakeResponse(400, {"error": "limit must be a positive integer", "code": "invalid_input"})]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().get(limit=0)
+    assert excinfo.value.status == 400
+
+
+def test_401_unauthenticated_raises() -> None:
+    FakeClient.queued = [FakeResponse(401, None, text="Unauthorized")]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().get("abc")
+    assert excinfo.value.status == 401
+
+
+def test_409_conflict_raises_with_retryable_body() -> None:
+    # a non-delete_many request that hit an SSI conflict: the API answers
+    # 409 + Retry-After with code=conflict; the client raises, exposing the
+    # body so the caller can back off (Retry-After) and retry verbatim
+    FakeClient.queued = [FakeResponse(409, {"error": "Concurrent write conflict — retry the request", "code": "conflict"})]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().append("abc", {"role": "user", "content": "x"})
+    err = excinfo.value
+    assert err.status == 409
+    assert json.loads(err.body)["code"] == "conflict"
+
+
+def test_500_internal_raises() -> None:
+    FakeClient.queued = [FakeResponse(500, {"error": "Failed to append messages", "code": "internal"})]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().append("abc", {"role": "user", "content": "x"})
+    assert excinfo.value.status == 500
+
+
+# ── delete_many status semantics (200 / 207 / 409 / 500) ─────────
+
+def _dm_body(retryable: bool = False) -> Dict[str, Any]:
+    return {
+        "results": [
+            {
+                "id": "a",
+                "deleted": False,
+                "error": "Concurrent write conflict — retry the request" if retryable else "boom",
+                **({"retryable": True} if retryable else {}),
+            }
+        ],
+        "deleted_count": 0,
+    }
+
+
+def test_delete_many_200_all_ok_returns_body() -> None:
+    body = {"results": [{"id": "a", "deleted": True}], "deleted_count": 1}
+    FakeClient.queued = [FakeResponse(200, body)]
+    with mock.patch("httpx.Client", FakeClient):
+        assert client().delete_many(["a"]) == body
+
+
+def test_delete_many_500_all_failed_returns_body_without_raising() -> None:
+    FakeClient.queued = [FakeResponse(500, _dm_body())]
+    with mock.patch("httpx.Client", FakeClient):
+        out = client().delete_many(["a"])
+    assert out == _dm_body()
+
+
+def test_delete_many_409_all_conflicted_returns_body_without_raising() -> None:
+    # every item failed with an SSI conflict → 409 + Retry-After at the API;
+    # the results body is surfaced (per-item retryable flag) instead of a raise
+    FakeClient.queued = [FakeResponse(409, _dm_body(retryable=True))]
+    with mock.patch("httpx.Client", FakeClient):
+        out = client().delete_many(["a"])
+    assert out["results"][0]["retryable"] is True
+
+
+def test_delete_many_400_invalid_input_still_raises() -> None:
+    FakeClient.queued = [FakeResponse(400, {"error": "ids must be a non-empty array of context IDs", "code": "invalid_input"})]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().delete_many([])
+    assert excinfo.value.status == 400
+
+
+# ── delete / update variations ───────────────────────────────────
+
+def test_delete_by_single_index_wraps_in_list() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().delete("abc", 3)
+    assert last()["json"] == {"ids": [3]}
+
+
+def test_delete_by_index_list_kept_verbatim() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().delete("abc", [0, -1])
+    assert last()["json"] == {"ids": [0, -1]}
+
+
+def test_delete_soft_with_metadata() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().delete("abc", "m1", metadata={"why": "cleanup"})
+    assert last()["json"] == {"ids": ["m1"], "metadata": {"why": "cleanup"}}
+
+
+def test_update_single_mode_by_id_without_metadata_is_flat() -> None:
+    # no metadata → the single update goes out flat, not wrapped in "updates"
+    with mock.patch("httpx.Client", FakeClient):
+        client().update("abc", id="m1", text="t")
+    assert last()["json"] == {"id": "m1", "text": "t"}
+
+
+def test_update_batch_mode_with_metadata() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().update("abc", updates=[{"id": "m1", "text": "a"}], metadata={"note": "audit"})
+    assert last()["json"] == {"updates": [{"id": "m1", "text": "a"}], "metadata": {"note": "audit"}}
+
+
+# ── config: timeout + custom headers ─────────────────────────────
+
+def test_default_timeout_passed_to_httpx() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        client().get("abc")
+    assert FakeClient.init_kwargs["timeout"] == 30.0
+
+
+def test_custom_timeout_passed_to_httpx() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        UltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787", timeout=5.5).get("abc")
+    assert FakeClient.init_kwargs["timeout"] == 5.5
+
+
+def test_custom_headers_merged_with_auth() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        UltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787", headers={"X-Debug": "1"}).get("abc")
+    headers = last()["headers"]
+    assert headers["X-Debug"] == "1"
+    assert headers["Authorization"] == "Bearer uc_live_test"
+
+
+# ── async client parity ──────────────────────────────────────────
+
+async def test_async_append_wraps_single_message() -> None:
+    with mock.patch("httpx.AsyncClient", FakeAsyncClient):
+        c = AsyncUltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787")
+        await c.append("abc", {"role": "user", "content": "hi"})
+    assert last()["json"] == [{"role": "user", "content": "hi"}]
+
+
+async def test_async_get_list_with_limit() -> None:
+    with mock.patch("httpx.AsyncClient", FakeAsyncClient):
+        c = AsyncUltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787")
+        await c.get(limit=3)
+    assert last()["url"] == "http://127.0.0.1:8787/contexts"
+    assert last()["params"] == {"limit": 3}
+
+
+async def test_async_delete_many_207_and_409_surface_body() -> None:
+    with mock.patch("httpx.AsyncClient", FakeAsyncClient):
+        c = AsyncUltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787")
+        FakeClient.queued = [FakeResponse(207, _dm_body())]
+        out207 = await c.delete_many(["a"])
+        assert out207["deleted_count"] == 0
+
+        FakeClient.queued = [FakeResponse(409, _dm_body(retryable=True))]
+        out409 = await c.delete_many(["a"])
+        assert out409["results"][0]["retryable"] is True
+
+
+async def test_async_delete_validation_raises_without_request() -> None:
+    FakeClient.last_request = None
+    with mock.patch("httpx.AsyncClient", FakeAsyncClient):
+        c = AsyncUltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787")
+        with pytest.raises(ValueError):
+            await c.delete("abc")
+    assert FakeClient.last_request is None  # validation happens before any HTTP

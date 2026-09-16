@@ -445,8 +445,9 @@ curl -X POST https://api.ultracontext.ai/mcp \\
                 operationId: 'getContext',
                 summary: 'Get context',
                 description:
-                    'Get context with all messages. Returns latest version by default.',
-                mintContent: '<Info>The `versions` array is only returned when `?history=true`.</Info>',
+                    'Get context with all messages. Returns latest version by default. Large contexts can be paged with `limit` (max 1,000) and `offset` — when either is supplied the response also includes `total` so you can walk the whole context. Omit both and the full context is returned, as always.',
+                mintContent:
+                    '<Info>The `versions` array is only returned when `?history=true`. To page a large context, pass `?limit=100&offset=0` and follow `offset` until you have `total` messages — omitting both always returns the full context, so nothing is ever silently truncated.</Info>',
                 codeSamples: [
                     {
                         lang: 'typescript',
@@ -539,13 +540,27 @@ curl "https://api.ultracontext.ai/contexts/ctx_abc123?before=2024-01-15T10:30:00
                         description: 'Include version history in response',
                         schema: { type: 'boolean' },
                     },
+                    {
+                        name: 'limit',
+                        in: 'query',
+                        description:
+                            'Page size for pagination (1..1000, clamped). When supplied, the response also includes `total` and the applied `limit`/`offset`. Omit for the full context.',
+                        schema: { type: 'integer', minimum: 1, maximum: 1000 },
+                    },
+                    {
+                        name: 'offset',
+                        in: 'query',
+                        description:
+                            'Zero-based index of the first message to return (pagination).',
+                        schema: { type: 'integer', minimum: 0 },
+                    },
                 ],
                 responses: {
                     200: {
                         description: 'Context messages with version info',
                         schemaRef: 'GetContextResponse',
                     },
-                    400: errorRef('Invalid index (when using ?at=)'),
+                    400: errorRef('Invalid index (when using ?at=) or invalid limit/offset'),
                     404: errorRef(
                         'Context not found, version not found, or index out of range'
                     ),
@@ -1293,6 +1308,8 @@ export const openapiComponents = {
             properties: {
                 data: {
                     type: 'array',
+                    description:
+                        'Messages for the requested version (a single page when ?limit/?offset is used)',
                     items: { $ref: '#/components/schemas/Message' },
                 },
                 version: {
@@ -1303,6 +1320,21 @@ export const openapiComponents = {
                     type: 'array',
                     items: { $ref: '#/components/schemas/Version' },
                     description: 'Version history (only present when ?history=true)',
+                },
+                total: {
+                    type: 'integer',
+                    description:
+                        'Total number of messages in the viewed version (only present when ?limit/?offset is used)',
+                },
+                limit: {
+                    type: 'integer',
+                    description:
+                        'Applied page size (only present when ?limit is supplied)',
+                },
+                offset: {
+                    type: 'integer',
+                    description:
+                        'Applied zero-based start index (present when ?limit/?offset is used; 0 when only ?limit is supplied)',
                 },
             },
         },

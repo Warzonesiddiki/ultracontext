@@ -41,12 +41,22 @@ export type GetContextInput = {
     at?: number;
     before?: string;
     history?: boolean;
+    /** pagination (API-010): page size, server-clamped to 1..1000 */
+    limit?: number;
+    /** pagination (API-010): zero-based start index */
+    offset?: number;
 };
 
 export type GetContextResponse<T = unknown> = {
     data: Array<{ id: string; index: number; metadata: Record<string, unknown> } & T>;
     version: number;
     versions?: Version[];
+    /** pagination (API-010): present only when limit/offset was requested */
+    total?: number;
+    /** pagination (API-010): applied page size (when limit was requested) */
+    limit?: number;
+    /** pagination (API-010): applied start index (when limit/offset was requested) */
+    offset?: number;
 };
 
 export type ListContextsInput = {
@@ -250,6 +260,8 @@ export class UltraContext {
         if (options?.at !== undefined) params.set('at', String(options.at));
         if (options?.before) params.set('before', options.before);
         if (options?.history) params.set('history', 'true');
+        if (options?.limit !== undefined) params.set('limit', String(options.limit));
+        if (options?.offset !== undefined) params.set('offset', String(options.offset));
         const query = params.toString();
         return this.request<GetContextResponse<T>>(`/contexts/${encodeURIComponent(idOrOptions)}${query ? `?${query}` : ''}`, { method: 'GET' });
     }

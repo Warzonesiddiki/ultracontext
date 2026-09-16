@@ -39,6 +39,12 @@ import {
 const MAX_JSON_BODY_BYTES = 8 * 1024 * 1024;
 const jsonBodyLimit = bodyLimit({ maxSize: MAX_JSON_BODY_BYTES });
 
+// GET /contexts/:id page-size ceiling (API-010). 1,000 is 100× the sync
+// daemon's batch size and 10% of a context's 10,000-message maximum — big
+// enough to be useful, small enough that a single page can't balloon the
+// response.
+const MAX_MESSAGES_PER_PAGE = 1000;
+
 // -- routes -------------------------------------------------------------------
 
 export function registerContextRoutes(app: HttpApp) {
@@ -218,9 +224,40 @@ export function registerContextRoutes(app: HttpApp) {
             history: c.req.query('history') === 'true',
         };
 
+        // Pagination (API-010): `limit`/`offset` are opt-in. Without them the
+        // response is byte-identical to the pre-pagination shape, so existing
+        // clients (SDKs, MCP "full conversation") are never silently
+        // truncated. When present: limit is clamped into [1, 1000] and the
+        // response gains `total` + the applied `limit`/`offset` so callers
+        // can walk a large context page by page.
+        const rawLimit = c.req.query('limit');
+        const rawOffset = c.req.query('offset');
+        const paginating = rawLimit !== undefined || rawOffset !== undefined;
+        let limit: number | undefined;
+        let offset = 0;
+        if (paginating) {
+            if (rawLimit !== undefined) {
+                const parsed = parseLimit(rawLimit, 1, MAX_MESSAGES_PER_PAGE);
+                if (parsed === null) {
+                    return c.json({ error: 'limit must be a positive integer', code: 'invalid_input' }, 400);
+                }
+                limit = parsed;
+            }
+            if (rawOffset !== undefined) offset = Number(rawOffset); // zod: digit-only
+        }
+
         const result = await getContext(storage, projectId, contextPublicId, opts);
         if (!result.ok) return errorResponse(c, result);
-        return c.json(result.data);
+
+        if (!paginating) return c.json(result.data);
+        const { data, ...rest } = result.data;
+        return c.json({
+            data: limit !== undefined ? data.slice(offset, offset + limit) : data.slice(offset),
+            ...rest,
+            total: data.length,
+            ...(limit !== undefined && { limit }),
+            offset,
+        });
     });
 
     // update messages — zod-gated body, call core, map Result

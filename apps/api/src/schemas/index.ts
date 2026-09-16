@@ -107,11 +107,17 @@ export type StatsQuery = z.infer<typeof StatsQuerySchema>;
 
 // history: any string passes (the route interprets === 'true'); version/at are
 // strict integer strings (core parseIndex rejects everything else with 400).
+// Pagination (API-010): `limit` is digit-only and clamped to [1, 1000] in the
+// route; `offset` is digit-only (non-negative by construction). ABSENT
+// limit+offset means "return everything" — the response shape is unchanged,
+// so no existing client (SDKs, MCP, dashboards) ever sees a truncated page.
 export const GetContextQuerySchema = z.object({
     version: StrictIntString.optional(),
     at: StrictIntString.optional(),
     before: z.string().optional(),
     history: z.string().optional(),
+    limit: LimitString.optional(),
+    offset: LimitString.optional(),
 });
 export type GetContextQuery = z.infer<typeof GetContextQuerySchema>;
 

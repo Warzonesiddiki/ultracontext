@@ -140,6 +140,8 @@ class UltraContext(_BaseClient):
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> GetContextResponse: ...
 
     def get(
@@ -151,6 +153,7 @@ class UltraContext(_BaseClient):
         before: Optional[str] = None,
         history: Optional[bool] = None,
         limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Union[GetContextResponse, ListContextsResponse]:
         """
         Get context by ID, or list all contexts.
@@ -161,7 +164,11 @@ class UltraContext(_BaseClient):
             at: Return messages 0 through this index
             before: Point-in-time state before timestamp
             history: Include version history
-            limit: Max contexts when listing (default 20)
+            limit: Max contexts when listing (default 20); page size when
+                getting a single context (API-010, server-clamped to 1..1000)
+            offset: Zero-based start index when getting a single context
+                (API-010). Omitting limit/offset always returns the full
+                context — nothing is silently truncated.
         """
         # list all contexts
         if context_id is None:
@@ -178,6 +185,10 @@ class UltraContext(_BaseClient):
             params["before"] = before
         if history is not None:
             params["history"] = history
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
 
         return self._request("GET", f"/contexts/{quote(context_id, safe='')}", params=params or None)
 
@@ -374,6 +385,8 @@ class AsyncUltraContext(_BaseClient):
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> GetContextResponse: ...
 
     async def get(
@@ -385,8 +398,13 @@ class AsyncUltraContext(_BaseClient):
         before: Optional[str] = None,
         history: Optional[bool] = None,
         limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Union[GetContextResponse, ListContextsResponse]:
-        """Get context by ID, or list all contexts."""
+        """Get context by ID, or list all contexts.
+
+        ``limit``/``offset`` paginate a single context (API-010); omitting
+        both always returns the full context.
+        """
 
         # list all contexts
         if context_id is None:
@@ -403,6 +421,10 @@ class AsyncUltraContext(_BaseClient):
             params["before"] = before
         if history is not None:
             params["history"] = history
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
 
         return await self._request("GET", f"/contexts/{quote(context_id, safe='')}", params=params or None)
 

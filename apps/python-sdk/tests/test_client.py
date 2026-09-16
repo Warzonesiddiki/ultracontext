@@ -287,6 +287,20 @@ def test_get_single_sends_all_selectors() -> None:
     }
 
 
+def test_get_single_sends_pagination_params() -> None:
+    # API-010: limit/offset paginate a single context
+    with mock.patch("httpx.Client", FakeClient):
+        client().get("abc", limit=50, offset=100)
+    assert last()["params"] == {"limit": 50, "offset": 100}
+
+
+def test_get_single_without_pagination_sends_no_params() -> None:
+    # omitting both always returns the full context — no params at all
+    with mock.patch("httpx.Client", FakeClient):
+        client().get("abc")
+    assert last()["params"] is None
+
+
 # ── response body handling ───────────────────────────────────────
 
 def test_success_returns_parsed_json() -> None:

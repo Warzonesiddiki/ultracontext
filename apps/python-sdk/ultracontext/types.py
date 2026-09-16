@@ -51,6 +51,10 @@ class GetContextResponse(TypedDict, total=False):
     data: List[Message]
     version: int
     versions: List[Version]
+    # pagination (API-010) — present only when limit/offset was requested
+    total: int
+    limit: int
+    offset: int
 
 
 class AppendResponse(TypedDict):

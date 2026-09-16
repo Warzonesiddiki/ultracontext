@@ -132,6 +132,13 @@ await uc.append(ctx.id, { role: 'user', content: 'Hello!' });
 const response = await generateText({ model, messages: ctx.data });
 ```
 
+Every request has a 30s timeout by default (`timeoutMs`, `0` disables) and
+transient failures are retried automatically — 429s on every method, 5xx and
+network errors on idempotent methods only (so appends are never blindly
+re-sent), with exponential backoff that honours the server's `Retry-After`.
+Tune with `maxRetries` (default `3`) and pass an `AbortSignal` to any method
+to cancel in-flight requests or pending retries.
+
 ### Python
 
 ```bash

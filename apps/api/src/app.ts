@@ -11,7 +11,9 @@ import { registerContextRoutes } from './routes/contexts';
 import { registerKeyRoutes } from './routes/keys';
 import { registerMcpRoutes } from './routes/mcp';
 import { registerRootRoutes } from './routes/root';
+import { registerRequestObservability } from './middleware/request-id';
 import type { StorageAdapter } from '@ultracontext/core';
+import { resolveDefaultAuditSink, type AuditSink } from './audit/permanent-delete';
 import type { ApiConfig } from './types/api';
 import type { AppEnv, HttpMiddleware } from './types/http';
 
@@ -29,6 +31,12 @@ export type AppOptions = {
     rateLimiter?: RateLimiter | null;
     /** disable all rate limiting regardless of limiter */
     rateLimitDisabled?: boolean;
+    /**
+     * Durable audit sink for irreversible ops (API-011). Omit to use the default
+     * local JSONL file ($ULTRACONTEXT_AUDIT_LOG, else beside the SQLite file /
+     * ~/.ultracontext). Tests inject an in-memory sink.
+     */
+    auditSink?: AuditSink;
 };
 
 export function createApp(options: AppOptions) {
@@ -37,6 +45,18 @@ export function createApp(options: AppOptions) {
     const disabled = options.rateLimitDisabled || options.rateLimiter === null;
     const limiter: RateLimiter | null = disabled ? null : (options.rateLimiter ?? new MemoryRateLimiter());
     const skip = () => limiter === null;
+
+    // request id + access log run first: every downstream middleware and
+    // route sees the id, and the log line spans the full request
+    registerRequestObservability(app);
+
+    // durable audit sink for irreversible ops (API-011): resolved once, made
+    // available to every route via the request context
+    const auditSink: AuditSink = options.auditSink ?? resolveDefaultAuditSink(options.config);
+    app.use('*', (c, next) => {
+        c.set('auditSink', auditSink);
+        return next();
+    });
 
     app.use('*', corsMiddleware);
     app.use('*', databaseMiddleware(options.storage, options.config));

@@ -150,6 +150,12 @@ uc.append(ctx["id"], {"role": "user", "content": "Hello!"})
 response = generate_text(model=model, messages=uc.get(ctx["id"])["data"])
 ```
 
+The client keeps its connection pool open between calls and automatically
+retries transient failures — 429s and 5xx responses (5xx only for idempotent
+methods, so appends are never blindly re-sent), with exponential backoff that
+honours the server's `Retry-After`. Tune it with `max_retries` (default `3`),
+use the client as a context manager, or call `uc.close()` when done.
+
 <p align="center">📚 Context API Guides</p>
 <p align="center">
   <a href="https://ultracontext.ai/docs/guides/store-retrieve-contexts">Store & Retrieve</a>

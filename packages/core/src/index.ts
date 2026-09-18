@@ -96,7 +96,7 @@ export { secretsEqual } from './secrets';
 
 // -- constants ----------------------------------------------------------------
 
-export { KEY_PREFIX_LEN, MAX_BATCH_DELETE } from './constants';
+export { KEY_PREFIX_LEN, MAX_BATCH_DELETE, MAX_MESSAGES_PER_APPEND, MAX_MESSAGES_PER_CONTEXT } from './constants';
 
 // -- request parsing ----------------------------------------------------------
 
@@ -111,3 +111,7 @@ export { firstRow } from './first-row';
 
 export { ok, err, resultStatus } from './result';
 export type { ErrorCode, Result } from './result';
+
+// -- transaction failure classification ----------------------------------------
+
+export { isRetryableTxError } from './tx-errors';

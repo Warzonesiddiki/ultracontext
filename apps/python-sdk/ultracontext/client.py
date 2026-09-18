@@ -1,5 +1,10 @@
 """UltraContext API client."""
 
+import asyncio
+import datetime
+import email.utils
+import random
+import time
 from typing import Any, Dict, List, Optional, Union, overload
 from urllib.parse import quote
 
@@ -17,6 +22,65 @@ from .types import (
     UpdateResponse,
 )
 
+# -- retry policy (SDK-001) ------------------------------------------------------
+# Statuses worth retrying:
+#   - 429: safe for EVERY method — the API's rate-limit gate rejects the
+#     request before any handler runs, so nothing was processed.
+#   - 5xx: only for idempotent methods. Blindly retrying a POST /contexts/:id
+#     (append) after a server error could double-apply the write if the server
+#     actually processed it.
+# 409 is deliberately NOT retried: the API's conflict + Retry-After is
+# surfaced to the caller, who decides whether the operation is safe to retry
+# verbatim.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE"})
+
+DEFAULT_MAX_RETRIES = 3
+_BACKOFF_BASE = 0.5
+_BACKOFF_CAP = 8.0
+
+
+def backoff_delay(attempt: int, *, base: float = _BACKOFF_BASE, cap: float = _BACKOFF_CAP) -> float:
+    """Exponential backoff with jitter (half..full of the computed delay).
+
+    ``attempt`` is 0-based: 0.5s → 1s → 2s → 4s, capped at ``cap``.
+    """
+    delay = min(cap, base * (2 ** attempt))
+    return random.uniform(delay / 2, delay)
+
+
+def _retry_after_seconds(response: httpx.Response) -> Optional[float]:
+    """Honour the server's Retry-After (header: seconds or HTTP-date).
+
+    The API's 429 rate-limit additionally carries ``retry_after_sec`` in the
+    JSON body (the header is not guaranteed there) — used as a fallback.
+    """
+    header = response.headers.get("retry-after")
+    if header:
+        header = header.strip()
+        try:
+            return max(0.0, float(header))
+        except ValueError:
+            try:
+                dt = email.utils.parsedate_to_datetime(header)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                delta = (dt - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+                return max(0.0, delta)
+            except (TypeError, ValueError):
+                return None
+    if response.status_code == 429:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            value = body.get("retry_after_sec")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                return float(value)
+    return None
+
+
 
 class _BaseClient:
     """Base client with shared config."""
@@ -31,11 +95,43 @@ class _BaseClient:
         base_url: Optional[str] = None,
         timeout: Optional[float] = None,
         headers: Optional[Dict[str, str]] = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ):
         self._api_key = api_key
         self._base_url = (base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self._timeout = timeout or self.DEFAULT_TIMEOUT
         self._headers = headers or {}
+        # SDK-001 resilience: retries for transient failures (429/5xx) with
+        # exponential backoff, honouring Retry-After. 0 disables retries.
+        self._max_retries = max(0, int(max_retries))
+        # persistent (lazy) httpx clients — one connection pool per client
+        self._client: Optional[httpx.Client] = None
+        self._async_client: Optional[httpx.AsyncClient] = None
+
+    # -- shared retry decision -------------------------------------------------
+
+    def _should_retry(
+        self,
+        method: str,
+        status: int,
+        accept_statuses: Optional[List[int]],
+        attempt: int,
+    ) -> bool:
+        """Whether a response status is worth another attempt.
+
+        ``attempt`` is the number of retries already made (0-based).
+        Statuses the caller explicitly accepts (``accept_statuses``) are never
+        retried — the caller wants to handle that status itself.
+        """
+        if attempt >= self._max_retries:
+            return False
+        if status not in _RETRYABLE_STATUS:
+            return False
+        if accept_statuses and status in accept_statuses:
+            return False
+        if status == 429:
+            return True  # gate rejected the request — nothing was processed
+        return method.upper() in _IDEMPOTENT_METHODS
 
     def _build_headers(self, *, with_content_type: bool = True) -> Dict[str, str]:
         headers = {**self._headers}
@@ -49,6 +145,28 @@ class _BaseClient:
 class UltraContext(_BaseClient):
     """Sync UltraContext API client."""
 
+    # -- lifecycle (SDK-001): one persistent httpx.Client per UltraContext -----
+
+    def _get_client(self) -> httpx.Client:
+        if self._client is None:
+            self._client = httpx.Client(timeout=self._timeout)
+        return self._client
+
+    def close(self) -> None:
+        """Close the underlying connection pool (idempotent)."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self) -> "UltraContext":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+        return None
+
+    # -- request -----------------------------------------------------------------
+
     def _request(
         self,
         method: str,
@@ -58,7 +176,7 @@ class UltraContext(_BaseClient):
         json: Optional[Any] = None,
         accept_statuses: Optional[List[int]] = None,
     ) -> Any:
-        """Make HTTP request."""
+        """Make HTTP request (persistent client + retries, SDK-001)."""
 
         # filter None values
         if params:
@@ -68,14 +186,38 @@ class UltraContext(_BaseClient):
 
         headers = self._build_headers(with_content_type=json is not None)
 
-        with httpx.Client(timeout=self._timeout) as client:
-            response = client.request(
-                method,
-                url,
-                params=params,
-                json=json,
-                headers=headers,
-            )
+        client = self._get_client()
+        attempt = 0
+        while True:
+            try:
+                response = client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json,
+                    headers=headers,
+                )
+            except httpx.TransportError:
+                # network/timeout failure: only safe to retry for idempotent
+                # methods — a lost POST may have been processed server-side.
+                if (
+                    self._max_retries
+                    and attempt < self._max_retries
+                    and method.upper() in _IDEMPOTENT_METHODS
+                ):
+                    time.sleep(backoff_delay(attempt))
+                    attempt += 1
+                    continue
+                raise
+
+            if self._should_retry(method, response.status_code, accept_statuses, attempt):
+                delay = _retry_after_seconds(response)
+                if delay is None:
+                    delay = backoff_delay(attempt)
+                time.sleep(delay)
+                attempt += 1
+                continue
+            break
 
         # handle errors — accept_statuses lets callers surface non-2xx bodies (e.g. batch partial-fail)
         accepted = accept_statuses is not None and response.status_code in accept_statuses
@@ -140,6 +282,8 @@ class UltraContext(_BaseClient):
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> GetContextResponse: ...
 
     def get(
@@ -151,6 +295,7 @@ class UltraContext(_BaseClient):
         before: Optional[str] = None,
         history: Optional[bool] = None,
         limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Union[GetContextResponse, ListContextsResponse]:
         """
         Get context by ID, or list all contexts.
@@ -161,7 +306,11 @@ class UltraContext(_BaseClient):
             at: Return messages 0 through this index
             before: Point-in-time state before timestamp
             history: Include version history
-            limit: Max contexts when listing (default 20)
+            limit: Max contexts when listing (default 20); page size when
+                getting a single context (API-010, server-clamped to 1..1000)
+            offset: Zero-based start index when getting a single context
+                (API-010). Omitting limit/offset always returns the full
+                context — nothing is silently truncated.
         """
         # list all contexts
         if context_id is None:
@@ -178,6 +327,10 @@ class UltraContext(_BaseClient):
             params["before"] = before
         if history is not None:
             params["history"] = history
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
 
         return self._request("GET", f"/contexts/{quote(context_id, safe='')}", params=params or None)
 
@@ -278,17 +431,41 @@ class UltraContext(_BaseClient):
         """
         Delete multiple contexts permanently (max 100).
 
-        Status 200 = all succeeded, 207 = partial, 500 = all failed. All three carry a
-        results body; this method surfaces the body instead of raising.
+        Status 200 = all succeeded, 207 = partial, 409 = every item failed with a
+        retryable serialization conflict (Retry-After header — wait, then retry the
+        request verbatim), 500 = all failed otherwise. All four carry a results
+        body; this method surfaces the body instead of raising.
 
         Args:
             ids: List of context IDs to delete
         """
-        return self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 500])
+        return self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 409, 500])
 
 
 class AsyncUltraContext(_BaseClient):
     """Async UltraContext API client."""
+
+    # -- lifecycle (SDK-001): one persistent httpx.AsyncClient per client -------
+
+    def _get_async_client(self) -> httpx.AsyncClient:
+        if self._async_client is None:
+            self._async_client = httpx.AsyncClient(timeout=self._timeout)
+        return self._async_client
+
+    async def close(self) -> None:
+        """Close the underlying connection pool (idempotent)."""
+        if self._async_client is not None:
+            await self._async_client.aclose()
+            self._async_client = None
+
+    async def __aenter__(self) -> "AsyncUltraContext":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.close()
+        return None
+
+    # -- request -----------------------------------------------------------------
 
     async def _request(
         self,
@@ -299,7 +476,7 @@ class AsyncUltraContext(_BaseClient):
         json: Optional[Any] = None,
         accept_statuses: Optional[List[int]] = None,
     ) -> Any:
-        """Make async HTTP request."""
+        """Make async HTTP request (persistent client + retries, SDK-001)."""
 
         # filter None values
         if params:
@@ -309,14 +486,38 @@ class AsyncUltraContext(_BaseClient):
 
         headers = self._build_headers(with_content_type=json is not None)
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.request(
-                method,
-                url,
-                params=params,
-                json=json,
-                headers=headers,
-            )
+        client = self._get_async_client()
+        attempt = 0
+        while True:
+            try:
+                response = await client.request(
+                    method,
+                    url,
+                    params=params,
+                    json=json,
+                    headers=headers,
+                )
+            except httpx.TransportError:
+                # network/timeout failure: only safe to retry for idempotent
+                # methods — a lost POST may have been processed server-side.
+                if (
+                    self._max_retries
+                    and attempt < self._max_retries
+                    and method.upper() in _IDEMPOTENT_METHODS
+                ):
+                    await asyncio.sleep(backoff_delay(attempt))
+                    attempt += 1
+                    continue
+                raise
+
+            if self._should_retry(method, response.status_code, accept_statuses, attempt):
+                delay = _retry_after_seconds(response)
+                if delay is None:
+                    delay = backoff_delay(attempt)
+                await asyncio.sleep(delay)
+                attempt += 1
+                continue
+            break
 
         # handle errors — accept_statuses lets callers surface non-2xx bodies
         accepted = accept_statuses is not None and response.status_code in accept_statuses
@@ -372,6 +573,8 @@ class AsyncUltraContext(_BaseClient):
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> GetContextResponse: ...
 
     async def get(
@@ -383,8 +586,13 @@ class AsyncUltraContext(_BaseClient):
         before: Optional[str] = None,
         history: Optional[bool] = None,
         limit: Optional[int] = None,
+        offset: Optional[int] = None,
     ) -> Union[GetContextResponse, ListContextsResponse]:
-        """Get context by ID, or list all contexts."""
+        """Get context by ID, or list all contexts.
+
+        ``limit``/``offset`` paginate a single context (API-010); omitting
+        both always returns the full context.
+        """
 
         # list all contexts
         if context_id is None:
@@ -401,6 +609,10 @@ class AsyncUltraContext(_BaseClient):
             params["before"] = before
         if history is not None:
             params["history"] = history
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
 
         return await self._request("GET", f"/contexts/{quote(context_id, safe='')}", params=params or None)
 
@@ -471,5 +683,5 @@ class AsyncUltraContext(_BaseClient):
         return await self._request("DELETE", f"/contexts/{quote(context_id, safe='')}", json=body)
 
     async def delete_many(self, ids: List[str]) -> DeleteManyResponse:
-        """Delete multiple contexts permanently (max 100). 200/207/500 all carry a results body."""
-        return await self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 500])
+        """Delete multiple contexts permanently (max 100). 200/207/409/500 all carry a results body."""
+        return await self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 409, 500])

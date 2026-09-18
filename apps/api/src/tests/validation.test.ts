@@ -1,14 +1,24 @@
 // =============================================================================
-// VALIDATION — strict query parsing + request body ceiling
+// VALIDATION — strict query parsing + request body ceiling + size caps
 // =============================================================================
 // API-001: ?limit must parse strictly (NaN → 400, clamped [1,100], default 20)
 // API-002: version/at selectors must reject malformed integers (1abc, 1.9, ' 1 ')
+// API-004: append size caps (per-append and per-context → 400 invalid_input)
 // API-006: append/patch bodies are capped (oversized → 413)
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { generateKey, hashKey, KEY_PREFIX_LEN } from '@ultracontext/core';
+import {
+    buildNodeInsertRecords,
+    findHead,
+    findTail,
+    generateKey,
+    hashKey,
+    KEY_PREFIX_LEN,
+    MAX_MESSAGES_PER_APPEND,
+    MAX_MESSAGES_PER_CONTEXT,
+} from '@ultracontext/core';
 import { MemoryStorage } from '@ultracontext/core/testing';
 import { createApp } from '../app';
 import type { ApiConfig } from '../types/api';
@@ -50,7 +60,7 @@ async function setupTestApp() {
     });
     assert.equal(appended.status, 201);
 
-    return { app, req, json, ctxId };
+    return { app, req, json, ctxId, storage, projectId: project!.id };
 }
 
 describe('API-001: ?limit strict parse', () => {
@@ -138,5 +148,46 @@ describe('API-006: request body ceiling on append/patch', () => {
             body: JSON.stringify([{ role: 'user', content: 'fits easily' }]),
         });
         assert.equal(res.status, 201);
+    });
+});
+
+describe('API-004: context size caps', () => {
+    it('rejects an append over MAX_MESSAGES_PER_APPEND with 400 + code', async () => {
+        const { req, json, ctxId } = await setupTestApp();
+        const tooMany = Array.from({ length: MAX_MESSAGES_PER_APPEND + 1 }, (_, i) => ({ text: String(i) }));
+        const res = await req(`/contexts/${ctxId}`, { method: 'POST', headers: json, body: JSON.stringify(tooMany) });
+        assert.equal(res.status, 400);
+        const body = (await res.json()) as { error: string; code: string };
+        assert.equal(body.code, 'invalid_input');
+        assert.match(body.error, /limit of 1000 messages per append/);
+    });
+
+    it('rejects an append that would push the context past MAX_MESSAGES_PER_CONTEXT', async () => {
+        const { req, json, ctxId, storage, projectId } = await setupTestApp();
+
+        // fill to one below the cap by linking MAX-3 rows directly under the
+        // current head (setup already appended 2 messages → 2 + 9997 = 9999)
+        const root = await storage.findRootContext(projectId, ctxId);
+        assert.ok(root);
+        const head = await findHead(storage, root.public_id);
+        assert.ok(head);
+        const tail = await findTail(storage, head.public_id);
+        const fill = Array.from({ length: MAX_MESSAGES_PER_CONTEXT - 3 }, (_, i) => ({
+            type: 'message',
+            content: { text: String(i) },
+            metadata: {},
+        }));
+        await storage.insertNodes(buildNodeInsertRecords(fill, projectId, head.public_id, tail));
+
+        // one more message fits — fills the context to exactly the cap
+        const fits = await req(`/contexts/${ctxId}`, { method: 'POST', headers: json, body: JSON.stringify([{ text: 'fits' }]) });
+        assert.equal(fits.status, 201);
+
+        // the next message would exceed the cap
+        const res = await req(`/contexts/${ctxId}`, { method: 'POST', headers: json, body: JSON.stringify([{ text: 'over' }]) });
+        assert.equal(res.status, 400);
+        const body = (await res.json()) as { error: string; code: string };
+        assert.equal(body.code, 'invalid_input');
+        assert.match(body.error, /limit of 10000 messages \(currently 10000\)/);
     });
 });

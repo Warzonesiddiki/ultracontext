@@ -3,17 +3,21 @@
 // =============================================================================
 
 import { buildNodeInsertRecords, findHead, getOrderedNodes, getVersions } from '../context-chain';
+import { MAX_MESSAGES_PER_APPEND, MAX_MESSAGES_PER_CONTEXT } from '../constants';
 import { generatePublicId } from '../public-ids';
 import type { MessageView } from '../message-view';
 import type { StorageAdapter } from '../storage';
 import { ok, err, type Result } from '../result';
+import { isRetryableTxError } from '../tx-errors';
 
 // -- intermediate tx outcome --------------------------------------------------
 // Mirrors the handler: the serializable tx returns either the success payload
 // or an error marker carrying the original HTTP status, resolved to a Result
 // once the tx completes.
 
-type AppendOutcome = { data: MessageView[]; version: number } | { code: 'not_found' | 'internal'; message: string };
+type AppendOutcome =
+    | { data: MessageView[]; version: number }
+    | { code: 'not_found' | 'invalid_input' | 'internal'; message: string };
 
 // -- op -----------------------------------------------------------------------
 
@@ -23,6 +27,13 @@ export async function appendMessages(
     contextId: string,
     messages: object | object[],
 ): Promise<Result<{ data: MessageView[]; version: number }>> {
+    // normalize input to an array — pure, so the per-append cap (API-004)
+    // rejects before any storage round-trip
+    const items = Array.isArray(messages) ? messages : [messages];
+    if (items.length > MAX_MESSAGES_PER_APPEND) {
+        return err('invalid_input', `Append exceeds the limit of ${MAX_MESSAGES_PER_APPEND} messages per append`);
+    }
+
     // Serializable tx so concurrent permanent-delete can't race with append
     // (Postgres SSI makes one side fail with 40001; client retries).
     let outcome: AppendOutcome;
@@ -36,11 +47,19 @@ export async function appendMessages(
             const head = await findHead(tx, root.public_id);
             if (!head) return { code: 'internal', message: 'HEAD not found' };
 
-            // normalize input to an array; the full content at the current
-            // head gives both the existing count and the chain tail
-            const items = Array.isArray(messages) ? messages : [messages];
+            // the full content at the current head gives both the existing
+            // count and the chain tail
             const existingNodes = await getOrderedNodes(tx, root.public_id, head.public_id);
             const existingCount = existingNodes.length;
+
+            // API-004: the append must not push the context past its ceiling
+            if (existingCount + items.length > MAX_MESSAGES_PER_CONTEXT) {
+                return {
+                    code: 'invalid_input',
+                    message: `Context would exceed the limit of ${MAX_MESSAGES_PER_CONTEXT} messages (currently ${existingCount})`,
+                };
+            }
+
             const tailPublicId = existingCount > 0 ? existingNodes[existingCount - 1].public_id! : null;
 
             // split metadata out of each message; the rest is content
@@ -96,8 +115,13 @@ export async function appendMessages(
 
             return { data, version: currentVersion };
         }, { isolationLevel: 'serializable' });
-    } catch {
-        // any tx failure collapses to a single internal error
+    } catch (error) {
+        // Log, don't swallow: the raw driver error only survives in the
+        // server log; the client gets a stable, classifiable response.
+        // SSI conflicts (SQLSTATE 40001) are retryable — 409 + Retry-After
+        // at the route (API-003).
+        console.error('appendMessages: transaction failed', error);
+        if (isRetryableTxError(error)) return err('conflict', 'Concurrent write conflict — retry the request');
         return err('internal', 'Failed to append messages');
     }
 

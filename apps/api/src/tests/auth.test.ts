@@ -8,11 +8,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { generateKey, hashKey, KEY_PREFIX_LEN } from '@ultracontext/core';
+import { generateKey, hashKey, KEY_PREFIX_LEN, type StorageAdapter } from '@ultracontext/core';
 import { MemoryStorage } from '@ultracontext/core/testing';
 import { createApp } from '../app';
 import type { CachedKey, KeyCache } from '../cache/types';
 import type { ApiConfig } from '../types/api';
+import { scheduleApiKeyLastUsedAt } from '../middleware/auth';
 
 const ADMIN_KEY = 'test-admin-key';
 const ADMIN_KEY_WRONG_LAST_CHAR = 'test-admin-kei';
@@ -124,5 +125,142 @@ describe('admin token verification', () => {
         const { req } = await setupTestApp();
         const res = await req('/v1/keys', ADMIN_KEY + 'x', 'POST', { name: 'ci' });
         assert.equal(res.status, 401);
+    });
+});
+
+// =============================================================================
+// AUTH — last_used_at throttling (API-005)
+// =============================================================================
+// last_used_at must be updated at most once per N minutes per key, and the
+// write must be off the request latency path (fire-and-forget).
+
+describe('last_used_at throttling (API-005)', () => {
+    // unique ids per test: the last-write stamp map is module state, so each
+    // test must not collide with another test's stamps
+    let unitKeySeq = 990000;
+    const nextUnitKeyId = () => ++unitKeySeq;
+
+    function countingStorage() {
+        const calls: Array<{ id: number; ts: string }> = [];
+        return {
+            calls,
+            storage: {
+                updateApiKeyLastUsedAt: async (id: number, ts: string) => {
+                    calls.push({ id, ts });
+                },
+            } as unknown as StorageAdapter,
+        };
+    }
+
+    it('writes at most once per interval window (explicit clock)', async () => {
+        const { storage, calls } = countingStorage();
+        const stamps = new Map<number, number>();
+        const id = nextUnitKeyId();
+        const interval = 60_000;
+
+        scheduleApiKeyLastUsedAt(storage, id, stamps, 1_000, interval);
+        assert.equal(calls.length, 1, 'first use writes');
+
+        scheduleApiKeyLastUsedAt(storage, id, stamps, 1_000 + interval - 1, interval);
+        assert.equal(calls.length, 1, 'one ms before the window expires: throttled');
+
+        scheduleApiKeyLastUsedAt(storage, id, stamps, 1_000 + interval, interval);
+        assert.equal(calls.length, 2, 'at the window boundary: writes again');
+    });
+
+    it('treats intervalMs=0 as "no throttle window"', async () => {
+        const { storage, calls } = countingStorage();
+        const stamps = new Map<number, number>();
+        const id = nextUnitKeyId();
+
+        scheduleApiKeyLastUsedAt(storage, id, stamps, 1_000, 0);
+        scheduleApiKeyLastUsedAt(storage, id, stamps, 1_001, 0);
+        scheduleApiKeyLastUsedAt(storage, id, stamps, 1_002, 0);
+
+        assert.equal(calls.length, 3);
+    });
+
+    it('stamps at schedule time, so concurrent uses in one window queue one write', async () => {
+        const { storage, calls } = countingStorage();
+        const stamps = new Map<number, number>();
+        const id = nextUnitKeyId();
+        const interval = 60_000;
+
+        // N in-flight requests, all inside the window — one write total
+        for (let i = 0; i < 50; i++) scheduleApiKeyLastUsedAt(storage, id, stamps, 2_000 + i, interval);
+        assert.equal(calls.length, 1);
+    });
+
+    it('a failing write is logged, not thrown, and the next attempt follows the window', async () => {
+        const originalError = console.error;
+        const logged: unknown[] = [];
+        console.error = (...args: unknown[]) => logged.push(args);
+        try {
+            let failures = 0;
+            const storage = {
+                updateApiKeyLastUsedAt: async () => {
+                    failures++;
+                    throw new Error('connection lost');
+                },
+            } as unknown as StorageAdapter;
+            const stamps = new Map<number, number>();
+            const id = nextUnitKeyId();
+            const interval = 60_000;
+
+            scheduleApiKeyLastUsedAt(storage, id, stamps, 3_000, interval);
+            // let the fire-and-forget promise settle
+            await new Promise((r) => setImmediate(r));
+            assert.equal(failures, 1);
+            assert.ok(logged.length > 0, 'failure was logged');
+
+            // still inside the window — no extra attempt
+            scheduleApiKeyLastUsedAt(storage, id, stamps, 3_000 + interval - 1, interval);
+            await new Promise((r) => setImmediate(r));
+            assert.equal(failures, 1);
+
+            // window elapsed — the write is retried (and fails again, logged)
+            scheduleApiKeyLastUsedAt(storage, id, stamps, 3_000 + interval, interval);
+            await new Promise((r) => setImmediate(r));
+            assert.equal(failures, 2);
+            assert.ok(logged.length >= 2, 'retry failure was logged too');
+        } finally {
+            console.error = originalError;
+        }
+    });
+
+    it('two authenticated requests (storage path + cache-hit path) produce ONE last_used_at write', async () => {
+        const { storage, req, apiKey } = await setupTestApp();
+
+        let writes = 0;
+        const realUpdate = storage.updateApiKeyLastUsedAt.bind(storage);
+        storage.updateApiKeyLastUsedAt = async (id: number, ts: string) => {
+            writes++;
+            return realUpdate(id, ts);
+        };
+
+        // first request: storage verification path
+        const first = await req('/contexts', apiKey);
+        assert.equal(first.status, 200);
+        // second request: cache-hit path (the cache was populated by #1)
+        const second = await req('/contexts', apiKey);
+        assert.equal(second.status, 200);
+
+        // the write is fire-and-forget — flush microtasks before asserting
+        await new Promise((r) => setImmediate(r));
+        assert.equal(writes, 1);
+    });
+
+    it('a hanging last_used_at write never blocks the response', async () => {
+        const { storage, req, apiKey } = await setupTestApp();
+
+        // never settles — if the request path ever awaited this, the test
+        // request would hang until the race timeout below fails it
+        storage.updateApiKeyLastUsedAt = () => new Promise<void>(() => {});
+
+        const res = await Promise.race([
+            req('/contexts', apiKey),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('request blocked on last_used_at')), 3_000)),
+        ]);
+        assert.equal(res.status, 200);
     });
 });

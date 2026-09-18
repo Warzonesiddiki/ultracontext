@@ -1,12 +1,17 @@
 import type { Context, MiddlewareHandler } from 'hono';
 
 import type { StorageAdapter } from '@ultracontext/core';
+import type { AuditSink } from '../audit/permanent-delete';
 import type { ApiConfig, Auth } from './api';
 
 export type AppVariables = {
     auth: Auth;
     storage: StorageAdapter;
     config: ApiConfig;
+    /** request correlation id (API-008) — set by the request-id middleware */
+    requestId: string;
+    /** durable audit sink for irreversible ops (API-011) */
+    auditSink: AuditSink;
 };
 
 export type AppEnv = {

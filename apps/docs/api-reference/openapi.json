@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "UltraContext",
-    "description": "Manage conversation contexts with automatic versioning. Every mutation creates a new branch, preserving full history.",
-    "version": "1.1.0"
+    "description": "Manage conversation contexts with automatic versioning. Every mutation creates a new branch, preserving full history. All API-key-authenticated requests are rate-limited to protect against abuse — a 429 carries a `RateLimitError` body with a `retry_after_sec` field. Every response carries an `X-Request-Id` header for correlation with server logs.",
+    "version": "1.2.0"
   },
   "servers": [
     {
@@ -16,11 +16,114 @@
     }
   ],
   "paths": {
+    "/": {
+      "get": {
+        "operationId": "welcome",
+        "summary": "Service welcome",
+        "description": "Unauthenticated service banner. Authenticated routes: /contexts*, /mcp, /v1/keys*.",
+        "responses": {
+          "200": {
+            "description": "Service banner",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "reasoning": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "liveness",
+        "summary": "Liveness probe",
+        "description": "Returns 200 while the process is up and serving. Unauthenticated — for load balancers and orchestrators.",
+        "responses": {
+          "200": {
+            "description": "Service is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "readiness",
+        "summary": "Readiness probe",
+        "description": "Returns 200 when the storage backend answers a trivial read, 503 when it does not. Unauthenticated — for load balancers and orchestrators.",
+        "responses": {
+          "200": {
+            "description": "Storage backend is reachable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage backend is unreachable (the process itself is up)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "not_ready"
+                      ]
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Underlying storage error"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/contexts": {
       "post": {
+        "operationId": "createContext",
         "summary": "Create context",
         "description": "Create a new context. Optionally copy from an existing context using the `from` parameter, and specify a `version` to fork from a specific version.",
-        "operationId": "createContext",
         "x-mint": {
           "content": "<Tip>Use `from` with `version`, `at`, or `before` to fork from a specific point in history. Learn more in the [Fork & Clone Contexts](/guides/fork-clone-contexts) guide.</Tip>"
         },
@@ -94,9 +197,9 @@
         }
       },
       "get": {
+        "operationId": "listContexts",
         "summary": "List contexts",
         "description": "List all root contexts for your project. Sorted by `created_at` descending (newest first).",
-        "operationId": "listContexts",
         "x-codeSamples": [
           {
             "lang": "typescript",
@@ -201,15 +304,25 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid limit (must be a positive integer)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
     "/mcp": {
       "post": {
+        "operationId": "mcpEndpoint",
         "summary": "MCP endpoint",
         "description": "Built-in Model Context Protocol endpoint. Accepts JSON-RPC requests over Streamable HTTP. Exposes `list_contexts`, `get_context_messages`, and `get_recent_activity` tools.",
-        "operationId": "mcpEndpoint",
         "x-mint": {
           "content": "<Info>This endpoint speaks [MCP Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http). Use any MCP-compatible client to connect.</Info>"
         },
@@ -226,11 +339,17 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["jsonrpc", "method", "id"],
+                "required": [
+                  "jsonrpc",
+                  "method",
+                  "id"
+                ],
                 "properties": {
                   "jsonrpc": {
                     "type": "string",
-                    "enum": ["2.0"]
+                    "enum": [
+                      "2.0"
+                    ]
                   },
                   "method": {
                     "type": "string",
@@ -243,8 +362,12 @@
                   "id": {
                     "description": "Request identifier",
                     "oneOf": [
-                      { "type": "string" },
-                      { "type": "integer" }
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "integer"
+                      }
                     ]
                   }
                 }
@@ -269,8 +392,12 @@
                     "id": {
                       "description": "Matching request identifier",
                       "oneOf": [
-                        { "type": "string" },
-                        { "type": "integer" }
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
                       ]
                     }
                   }
@@ -293,11 +420,11 @@
     },
     "/contexts/{id}": {
       "get": {
-        "summary": "Get context",
-        "description": "Get context with all messages. Returns latest version by default.",
         "operationId": "getContext",
+        "summary": "Get context",
+        "description": "Get context with all messages. Returns latest version by default. Large contexts can be paged with `limit` (max 1,000) and `offset` — when either is supplied the response also includes `total` so you can walk the whole context. Omit both and the full context is returned, as always.",
         "x-mint": {
-          "content": "<Info>The `versions` array is only returned when `?history=true`.</Info>"
+          "content": "<Info>The `versions` array is only returned when `?history=true`. To page a large context, pass `?limit=100&offset=0` and follow `offset` until you have `total` messages — omitting both always returns the full context, so nothing is ever silently truncated.</Info>"
         },
         "x-codeSamples": [
           {
@@ -358,6 +485,25 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size for pagination (1..1000, clamped). When supplied, the response also includes `total` and the applied `limit`/`offset`. Omit for the full context.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Zero-based index of the first message to return (pagination).",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
           }
         ],
         "responses": {
@@ -372,7 +518,7 @@
             }
           },
           "400": {
-            "description": "Invalid index (when using ?at=)",
+            "description": "Invalid index (when using ?at=) or invalid limit/offset",
             "content": {
               "application/json": {
                 "schema": {
@@ -394,11 +540,11 @@
         }
       },
       "post": {
-        "summary": "Append messages",
-        "description": "Append one or more messages to the context.",
         "operationId": "appendMessages",
+        "summary": "Append messages",
+        "description": "Append one or more messages to the context. Each append creates a new version. Limits: at most 1,000 messages per append and 10,000 messages per context — exceeding either returns 400 with code `invalid_input`.",
         "x-mint": {
-          "content": "<Info>Appends do **not** create a new version of the context. This happens because the `at` parameter on the GET endpoint is enough to retrieve previous states by index.</Info>\n\n<Warning>`index` is a reserved field. The `metadata` field is extracted and stored at the message level—it won't appear as a regular content field.</Warning>"
+          "content": "<Info>Every append creates a **new version** of the context, so `?version=N` and `?at=…` on the GET endpoint are meaningful for append-only sessions too.</Info>\n\n<Warning>`index` is a reserved field. The `metadata` field is extracted and stored at the message level—it won't appear as a regular content field.</Warning>"
         },
         "x-codeSamples": [
           {
@@ -458,13 +604,31 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Retryable conflict — this write raced with a concurrent write on the same context (database serialization conflict). The response carries a `Retry-After` header; wait that many seconds and retry the request verbatim.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the request verbatim",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       },
       "patch": {
+        "operationId": "updateMessages",
         "summary": "Update messages",
         "description": "Update one or more messages by `id` or `index`. Each update automatically creates a new version.",
-        "operationId": "updateMessages",
         "x-mint": {
           "content": "<Info>Include `metadata` in the request body to record why this update was made. It is optional, but recommended to make audit trail easier to understand.</Info>"
         },
@@ -540,11 +704,11 @@
         }
       },
       "delete": {
-        "summary": "Delete messages or the entire context",
-        "description": "Send a body with `ids` to soft-delete specific messages (creates a new version, prior versions retain the messages). Send no body OR `{\"permanent\": true}` to permanently delete the entire context (irreversible).",
         "operationId": "deleteContextOrMessages",
+        "summary": "Delete messages or the entire context",
+        "description": "Send a body with `ids` to soft-delete specific messages (creates a new version, prior versions retain the messages). Send no body OR `{\"permanent\": true}` to permanently delete the entire context (irreversible). A permanent delete first writes a durable, append-only audit record to a local JSONL file (`$ULTRACONTEXT_AUDIT_LOG`, else beside the SQLite file / `~/.ultracontext/`) and fails closed — if the record cannot be persisted, nothing is deleted (500).",
         "x-mint": {
-          "content": "<Tip>Send `{\"ids\": [...]}` to delete specific messages (soft, versioned). Send `{\"permanent\": true}` to delete the entire context (hard, irreversible).</Tip>\n\n<Info>Include `metadata` to record why this deletion was made. Optional, but recommended for audit trail.</Info>"
+          "content": "<Tip>Send `{\"ids\": [...]}` to delete specific messages (soft, versioned). Send `{\"permanent\": true}` to delete the entire context (hard, irreversible).</Tip>\n\n<Info>Include `metadata` to record why this deletion was made. It is echoed in the response and written to the durable local audit trail before the wipe — nothing is deleted unless the record is persisted.</Info>"
         },
         "x-codeSamples": [
           {
@@ -622,15 +786,43 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Retryable conflict — the permanent delete raced with a concurrent write on the same context (database serialization conflict). The response carries a `Retry-After` header; wait that many seconds and retry the request verbatim.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the request verbatim",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Permanent delete aborted: the durable audit record could not be persisted — nothing was deleted (fail closed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
     },
     "/contexts/delete-many": {
       "post": {
+        "operationId": "deleteManyContexts",
         "summary": "Delete multiple contexts permanently",
         "description": "Permanently delete up to 100 contexts in one call. Each context and all its versions are irreversibly removed.",
-        "operationId": "deleteManyContexts",
         "x-codeSamples": [
           {
             "lang": "typescript",
@@ -663,7 +855,9 @@
             "description": "All contexts deleted successfully",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeleteManyResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteManyResponse"
+                }
               }
             }
           },
@@ -671,7 +865,9 @@
             "description": "Multi-Status — partial success (some items failed)",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeleteManyResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteManyResponse"
+                }
               }
             }
           },
@@ -679,7 +875,27 @@
             "description": "Invalid request body (empty, oversized, non-string element)",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" }
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Every item failed with a retryable serialization conflict (each item is flagged `retryable: true`). The response carries a `Retry-After` header; wait that many seconds and retry the request verbatim.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before retrying the request verbatim",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteManyResponse"
+                }
               }
             }
           },
@@ -687,7 +903,486 @@
             "description": "All items failed (response body still contains per-item errors)",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeleteManyResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteManyResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contexts/search": {
+      "get": {
+        "operationId": "searchMessages",
+        "summary": "Search messages",
+        "description": "Full-text search across all message content in your project. Free and unmetered — there is no query quota and no paywall. Results are ranked, and `content` is a snippet centered on the match.",
+        "x-codeSamples": [
+          {
+            "lang": "typescript",
+            "label": "TypeScript",
+            "source": "const { data } = await uc.search('authentication bug')\n\n// With filters\nconst { data } = await uc.search('retry', {\n  limit: 5,\n  project_path: '/Users/alice/Code/myapp',\n})"
+          },
+          {
+            "lang": "python",
+            "label": "Python",
+            "source": "result = uc.search('authentication bug')\n\n# With filters\nresult = uc.search('retry', limit=5, project_path='/Users/alice/Code/myapp')"
+          },
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl \"https://api.ultracontext.ai/contexts/search?q=authentication+bug\" \\\n  -H \"Authorization: Bearer $API_KEY\"\n\n# With limit + project filter\ncurl \"https://api.ultracontext.ai/contexts/search?q=retry&limit=5&project_path=/Users/alice/Code/myapp\" \\\n  -H \"Authorization: Bearer $API_KEY\""
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Search text (required, non-empty)",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum number of hits to return",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Filter by agent source",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter by user identifier",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "host",
+            "in": "query",
+            "description": "Filter by machine hostname",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project_path",
+            "in": "query",
+            "description": "Filter by project directory path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Filter by session identifier",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Only messages created after this ISO 8601 timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "description": "Only messages created before this ISO 8601 timestamp",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ranked search hits",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query or limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contexts/stats": {
+      "get": {
+        "operationId": "getActivityStats",
+        "summary": "Activity stats",
+        "description": "Aggregated write activity (appends, updates, deletes) computed on demand from your own database. Free — the commercial tier sells analytics; there is nothing to unlock here and no history window that silently truncates. Buckets are UTC; weeks start on Monday.",
+        "x-codeSamples": [
+          {
+            "lang": "typescript",
+            "label": "TypeScript",
+            "source": "// Last 30 days, one bucket per day\nconst stats = await uc.stats({ days: 30 })\n\n// Monthly buckets since a date, one agent source\nconst stats = await uc.stats({ bucket: 'month', from: '2026-01-01T00:00:00Z', source: 'claude' })"
+          },
+          {
+            "lang": "python",
+            "label": "Python",
+            "source": "# Last 30 days, one bucket per day\nstats = uc.stats(days=30)\n\n# Monthly buckets since a date, one agent source\nstats = uc.stats(bucket='month', from='2026-01-01T00:00:00Z', source='claude')"
+          },
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl \"https://api.ultracontext.ai/contexts/stats?bucket=day&days=30\" \\\n  -H \"Authorization: Bearer $API_KEY\"\n\n# Range + source\ncurl \"https://api.ultracontext.ai/contexts/stats?bucket=week&from=2026-01-01T00:00:00Z&to=2026-03-01T00:00:00Z&source=codex\" \\\n  -H \"Authorization: Bearer $API_KEY\""
+          }
+        ],
+        "parameters": [
+          {
+            "name": "bucket",
+            "in": "query",
+            "description": "Bucket size: `day` (default), `week`, or `month`",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "default": "day"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Window start (ISO 8601). Defaults to `days` days ago.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "Window end (ISO 8601). Defaults to now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Window length in days when `from` is omitted (default 30)",
+            "schema": {
+              "type": "integer",
+              "default": 30
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "description": "Restrict to one agent source",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Activity rollup",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bucket, timestamp, or days value",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/keys": {
+      "post": {
+        "operationId": "createKey",
+        "summary": "Create API key",
+        "description": "Create a new API key for a new project. Admin-only — authenticate with the UltraContext admin key (ULTRACONTEXT_ADMIN_KEY), not a regular API key. The raw key is returned exactly once; only its hash is stored.",
+        "x-codeSamples": [
+          {
+            "lang": "bash",
+            "label": "cURL",
+            "source": "curl -X POST https://api.ultracontext.ai/v1/keys \\\n  -H \"Authorization: Bearer $ADMIN_KEY\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '{\"name\": \"ci-deploy\"}'"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateKeyInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Key created (raw key returned once)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized (admin key required)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/keys/{projectId}": {
+      "get": {
+        "operationId": "listKeys",
+        "summary": "List a project's API keys",
+        "description": "List all API keys for a project. Admin-only. Never exposes key hashes.",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "description": "Project ID (positive integer)",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project and its keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "projectId must be a positive integer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized (admin key required)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/keys/{id}": {
+      "delete": {
+        "operationId": "revokeKey",
+        "summary": "Revoke API key",
+        "description": "Revoke an API key — the leaked-key escape hatch. The key stops working immediately: the storage row is deleted and the auth cache entry is evicted. Admin-only.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Key ID (positive integer)",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id must be a positive integer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized (admin key required)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/keys/{id}/rotate": {
+      "post": {
+        "operationId": "rotateKey",
+        "summary": "Rotate API key",
+        "description": "Issue a fresh key for the same project and revoke the old one in one step. Admin-only. The old prefix is returned (masked) so you can update references; the old raw key is not.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Key ID to rotate (positive integer)",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Key rotated (new raw key returned once)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotateKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "id must be a positive integer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized (admin key required)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
               }
             }
           }
@@ -700,7 +1395,7 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
-        "description": "API key from your UltraContext dashboard"
+        "description": "API key from your UltraContext dashboard. The /v1/keys routes additionally require the admin key."
       }
     },
     "schemas": {
@@ -761,7 +1456,11 @@
           },
           "operation": {
             "type": "string",
-            "enum": ["create", "update", "delete"],
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
             "description": "Operation that created this version"
           },
           "affected": {
@@ -784,6 +1483,7 @@
         "properties": {
           "data": {
             "type": "array",
+            "description": "Messages for the requested version (a single page when ?limit/?offset is used)",
             "items": {
               "$ref": "#/components/schemas/Message"
             }
@@ -798,6 +1498,18 @@
               "$ref": "#/components/schemas/Version"
             },
             "description": "Version history (only present when ?history=true)"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Total number of messages in the viewed version (only present when ?limit/?offset is used)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Applied page size (only present when ?limit is supplied)"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Applied zero-based start index (present when ?limit/?offset is used; 0 when only ?limit is supplied)"
           }
         }
       },
@@ -911,7 +1623,9 @@
                 "description": "Audit metadata for this version (e.g., reason, author)"
               }
             },
-            "required": ["updates"]
+            "required": [
+              "updates"
+            ]
           }
         ]
       },
@@ -920,15 +1634,32 @@
         "oneOf": [
           {
             "type": "object",
-            "required": ["ids"],
+            "required": [
+              "ids"
+            ],
             "properties": {
               "ids": {
                 "oneOf": [
-                  { "type": "string", "description": "Single message ID (msg_...)" },
-                  { "type": "integer", "description": "Single message index (0 = first, -1 = last)" },
+                  {
+                    "type": "string",
+                    "description": "Single message ID (msg_...)"
+                  },
+                  {
+                    "type": "integer",
+                    "description": "Single message index (0 = first, -1 = last)"
+                  },
                   {
                     "type": "array",
-                    "items": { "oneOf": [{ "type": "string" }, { "type": "integer" }] },
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    },
                     "description": "Array of message IDs and/or indices"
                   }
                 ]
@@ -942,9 +1673,17 @@
           },
           {
             "type": "object",
-            "required": ["permanent"],
+            "required": [
+              "permanent"
+            ],
             "properties": {
-              "permanent": { "type": "boolean", "enum": [true], "description": "Must be `true` to permanently delete the entire context" },
+              "permanent": {
+                "type": "boolean",
+                "enum": [
+                  true
+                ],
+                "description": "Must be `true` to permanently delete the entire context"
+              },
               "metadata": {
                 "type": "object",
                 "additionalProperties": true,
@@ -957,8 +1696,14 @@
       "PermanentDeleteResponse": {
         "type": "object",
         "properties": {
-          "deleted": { "type": "boolean", "description": "Whether the context was deleted" },
-          "id": { "type": "string", "description": "The deleted context ID" },
+          "deleted": {
+            "type": "boolean",
+            "description": "Whether the context was deleted"
+          },
+          "id": {
+            "type": "string",
+            "description": "The deleted context ID"
+          },
           "metadata": {
             "type": "object",
             "additionalProperties": true,
@@ -968,11 +1713,15 @@
       },
       "DeleteManyInput": {
         "type": "object",
-        "required": ["ids"],
+        "required": [
+          "ids"
+        ],
         "properties": {
           "ids": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "minItems": 1,
             "maxItems": 100,
             "description": "Array of context IDs to permanently delete (max 100)"
@@ -981,16 +1730,29 @@
       },
       "DeleteManyResponse": {
         "type": "object",
-        "description": "Status 200 when all succeeded, 207 (Multi-Status) on partial failure, 500 when every item failed.",
+        "description": "Status 200 when all succeeded, 207 (Multi-Status) on partial failure, 409 when every item failed with a retryable serialization conflict (Retry-After header), 500 when every item failed otherwise.",
         "properties": {
           "results": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "id": { "type": "string", "description": "Context ID" },
-                "deleted": { "type": "boolean", "description": "Whether the context was deleted" },
-                "error": { "type": "string", "description": "Error message if deletion failed" }
+                "id": {
+                  "type": "string",
+                  "description": "Context ID"
+                },
+                "deleted": {
+                  "type": "boolean",
+                  "description": "Whether the context was deleted"
+                },
+                "error": {
+                  "type": "string",
+                  "description": "Error message if deletion failed"
+                },
+                "retryable": {
+                  "type": "boolean",
+                  "description": "True when the failure was a transient serialization conflict — retry the item verbatim after the Retry-After delay"
+                }
               }
             }
           },
@@ -1000,12 +1762,304 @@
           }
         }
       },
+      "SearchHit": {
+        "type": "object",
+        "description": "One ranked search match",
+        "properties": {
+          "context_id": {
+            "type": "string",
+            "description": "Context the message belongs to"
+          },
+          "branch_id": {
+            "type": "string",
+            "description": "Version head the message currently lives under (differs from context_id once the context was edited)"
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Message ID (msg_...)"
+          },
+          "content": {
+            "type": "string",
+            "description": "Snippet of the message content centered on the match"
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "rank": {
+            "type": "number",
+            "description": "Relevance rank (lower is better)"
+          }
+        }
+      },
+      "SearchResponse": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The (trimmed) search text"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Effective limit applied"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchHit"
+            }
+          }
+        }
+      },
+      "ActivityResponse": {
+        "type": "object",
+        "description": "Write-activity rollup over a UTC window. `series` is gap-filled (empty buckets carry null first/last event times).",
+        "properties": {
+          "bucket": {
+            "type": "string",
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "description": "Bucket size used"
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Window start"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Window end"
+          },
+          "totals": {
+            "type": "object",
+            "properties": {
+              "nodes": {
+                "type": "integer"
+              },
+              "messages": {
+                "type": "integer"
+              },
+              "contexts": {
+                "type": "integer"
+              },
+              "root_contexts": {
+                "type": "integer"
+              },
+              "sources": {
+                "type": "integer",
+                "description": "Distinct sources seen in the window"
+              },
+              "active_buckets": {
+                "type": "integer",
+                "description": "Buckets that contain at least one event"
+              }
+            }
+          },
+          "by_source": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "string"
+                },
+                "nodes": {
+                  "type": "integer"
+                },
+                "messages": {
+                  "type": "integer"
+                },
+                "contexts": {
+                  "type": "integer"
+                },
+                "root_contexts": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "bucket_start": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "Bucket start (UTC)"
+                },
+                "nodes": {
+                  "type": "integer"
+                },
+                "messages": {
+                  "type": "integer"
+                },
+                "contexts": {
+                  "type": "integer"
+                },
+                "root_contexts": {
+                  "type": "integer"
+                },
+                "first_event_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "nullable": true
+                },
+                "last_event_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "nullable": true
+                },
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "CreateKeyInput": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "min_length": 1,
+            "description": "Human-readable project/key name (required)"
+          }
+        }
+      },
+      "CreateKeyResponse": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The raw API key — returned exactly once"
+          },
+          "prefix": {
+            "type": "string",
+            "description": "Key prefix (safe to store; used for cache eviction)"
+          },
+          "project_id": {
+            "type": "integer"
+          }
+        }
+      },
+      "ApiKey": {
+        "type": "object",
+        "description": "Public key row. key_hash is never exposed.",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "project_id": {
+            "type": "integer"
+          },
+          "key_prefix": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "KeyListResponse": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "integer"
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiKey"
+            }
+          }
+        }
+      },
+      "RevokeKeyResponse": {
+        "type": "object",
+        "properties": {
+          "revoked": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "description": "The revoked key ID"
+          }
+        }
+      },
+      "RotateKeyResponse": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The new raw API key — returned exactly once"
+          },
+          "prefix": {
+            "type": "string",
+            "description": "New key prefix (safe to store)"
+          },
+          "project_id": {
+            "type": "integer"
+          }
+        }
+      },
+      "RateLimitError": {
+        "type": "object",
+        "description": "Returned with 429 when a caller exceeds the abuse-protection rate limit. The limit protects against abuse, not usage — UltraContext is free and unmetered.",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "retry_after_sec": {
+            "type": "integer",
+            "description": "Seconds to wait before retrying"
+          }
+        }
+      },
       "Error": {
         "type": "object",
         "properties": {
           "error": {
             "type": "string",
             "description": "Error message"
+          },
+          "code": {
+            "type": "string",
+            "enum": [
+              "not_found",
+              "invalid_input",
+              "conflict",
+              "internal"
+            ],
+            "description": "Machine-readable error code. `conflict` is retryable — the response also carries a `Retry-After` header; wait that many seconds and retry the request verbatim."
           }
         }
       }

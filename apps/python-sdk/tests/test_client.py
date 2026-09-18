@@ -722,3 +722,134 @@ async def test_async_429_honours_retry_after_header() -> None:
     assert out == {"ok": True}
     assert len(FakeClient.calls) == 2
     assert sleeps == [1.0]
+
+
+# ── named branches (ARCH-001) ────────────────────────────────────
+#
+# A branch pins a stable name to an immutable version id. These tests pin the
+# wire contract: the three endpoints, their bodies, and the widened `version`
+# selector (an id string as well as a positional index) on get()/create().
+
+BRANCH = {
+    "name": "release-1.2",
+    "version_id": "ctx_def456",
+    "version": 3,
+    "created_at": "2026-09-01T00:00:00.000Z",
+    "updated_at": "2026-09-01T00:00:00.000Z",
+}
+
+
+def test_package_exports_branch_types() -> None:
+    for name in ("BranchRef", "BranchListResponse", "DeleteBranchResponse", "VersionSelector"):
+        assert name in ultracontext.__all__
+
+
+def test_branches_lists_on_the_branch_endpoint() -> None:
+    FakeClient.queued = [FakeResponse(200, {"branches": [BRANCH]})]
+    with mock.patch("httpx.Client", FakeClient):
+        out = client().branches("ctx_abc123")
+    assert last()["method"] == "GET"
+    assert last()["url"] == "http://127.0.0.1:8787/contexts/ctx_abc123/branches"
+    assert last()["params"] is None
+    assert out == {"branches": [BRANCH]}
+
+
+def test_set_branch_puts_the_name_and_omits_unset_version() -> None:
+    FakeClient.queued = [FakeResponse(200, BRANCH)]
+    with mock.patch("httpx.Client", FakeClient):
+        out = client().set_branch("ctx_abc123", "release-1.2")
+    assert last()["method"] == "PUT"
+    assert last()["url"] == "http://127.0.0.1:8787/contexts/ctx_abc123/branches"
+    assert last()["json"] == {"name": "release-1.2"}
+    assert last()["headers"]["Content-Type"] == "application/json"
+    assert out == BRANCH
+
+
+def test_set_branch_pins_an_id_an_index_and_a_negative_index() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        c = client()
+        c.set_branch("ctx_abc123", "pinned", version="ctx_def456")
+        assert last()["json"] == {"name": "pinned", "version": "ctx_def456"}
+        c.set_branch("ctx_abc123", "by-index", version=1)
+        assert last()["json"] == {"name": "by-index", "version": 1}
+        c.set_branch("ctx_abc123", "tip", version=-1)
+        assert last()["json"] == {"name": "tip", "version": -1}
+
+
+def test_delete_branch_removes_the_pointer_and_returns_a_receipt() -> None:
+    FakeClient.queued = [FakeResponse(200, {"deleted": True, "name": "release-1.2"})]
+    with mock.patch("httpx.Client", FakeClient):
+        out = client().delete_branch("ctx_abc123", "release-1.2")
+    assert last()["method"] == "DELETE"
+    assert last()["url"] == "http://127.0.0.1:8787/contexts/ctx_abc123/branches/release-1.2"
+    assert "json" not in last() or last()["json"] is None
+    assert out == {"deleted": True, "name": "release-1.2"}
+
+
+def test_branch_paths_are_url_encoded() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        c = client()
+        c.branches("my proj/sub dir")
+        assert last()["url"] == "http://127.0.0.1:8787/contexts/my%20proj%2Fsub%20dir/branches"
+        c.delete_branch("ctx_abc123", "weird/name")
+        assert last()["url"].endswith("/contexts/ctx_abc123/branches/weird%2Fname")
+
+
+def test_get_and_create_accept_an_immutable_version_id() -> None:
+    with mock.patch("httpx.Client", FakeClient):
+        c = client()
+        c.get("ctx_abc123", version="ctx_def456")
+        assert last()["params"] == {"version": "ctx_def456"}
+        c.get("ctx_abc123", version=2)
+        assert last()["params"] == {"version": 2}
+        c.create(from_="ctx_abc123", version="ctx_def456")
+        assert last()["json"] == {"from": "ctx_abc123", "version": "ctx_def456"}
+
+
+def test_history_entries_carry_the_immutable_id() -> None:
+    body = {
+        "data": [],
+        "version": 1,
+        "versions": [
+            {"version": 0, "id": "ctx_a", "created_at": "x", "operation": "create", "affected": None},
+            {"version": 1, "id": "ctx_b", "created_at": "y", "operation": "append", "affected": None},
+        ],
+    }
+    FakeClient.queued = [FakeResponse(200, body)]
+    with mock.patch("httpx.Client", FakeClient):
+        out = client().get("ctx_abc123", history=True)
+    assert [v["id"] for v in out["versions"]] == ["ctx_a", "ctx_b"]
+
+
+def test_branch_errors_surface_as_http_errors() -> None:
+    FakeClient.queued = [FakeResponse(404, {"error": "Branch not found", "code": "not_found"})]
+    with mock.patch("httpx.Client", FakeClient):
+        with pytest.raises(UltraContextHttpError) as excinfo:
+            client().delete_branch("ctx_abc123", "nope")
+    assert excinfo.value.status == 404
+
+
+async def test_async_branch_endpoints() -> None:
+    with mock.patch("httpx.AsyncClient", FakeAsyncClient):
+        c = AsyncUltraContext(api_key="uc_live_test", base_url="http://127.0.0.1:8787")
+
+        FakeClient.queued = [FakeResponse(200, {"branches": [BRANCH]})]
+        assert await c.branches("ctx_abc123") == {"branches": [BRANCH]}
+        assert last()["method"] == "GET"
+        assert last()["url"] == "http://127.0.0.1:8787/contexts/ctx_abc123/branches"
+
+        FakeClient.queued = [FakeResponse(200, BRANCH)]
+        assert await c.set_branch("ctx_abc123", "release-1.2", version="ctx_def456") == BRANCH
+        assert last()["method"] == "PUT"
+        assert last()["json"] == {"name": "release-1.2", "version": "ctx_def456"}
+
+        FakeClient.queued = [FakeResponse(200, {"deleted": True, "name": "release-1.2"})]
+        assert await c.delete_branch("ctx_abc123", "release-1.2") == {
+            "deleted": True,
+            "name": "release-1.2",
+        }
+        assert last()["method"] == "DELETE"
+        assert last()["url"].endswith("/branches/release-1.2")
+
+        await c.get("ctx_abc123", version="ctx_def456")
+        assert last()["params"] == {"version": "ctx_def456"}

@@ -17,6 +17,8 @@ import assert from 'node:assert/strict';
 
 import { renderOpenApi, openapiPaths } from '../schemas/openapi';
 import {
+    BranchNameParamSchema,
+    CreateBranchSchema,
     CreateContextSchema,
     DeleteInputSchema,
     DeleteManySchema,
@@ -61,6 +63,8 @@ describe('openapi generation', () => {
             '/contexts/search',
             '/contexts/stats',
             '/contexts/{id}',
+            '/contexts/{id}/branches',
+            '/contexts/{id}/branches/{name}',
             '/contexts/delete-many',
             '/mcp',
             '/v1/keys',
@@ -82,9 +86,10 @@ describe('openapi generation', () => {
     });
 
     it('registry path count matches the rendered document', () => {
-        assert.equal(openapiPaths.length, 13);
+        // ARCH-001 added /contexts/{id}/branches and /contexts/{id}/branches/{name}
+        assert.equal(openapiPaths.length, 15);
         const doc = parse();
-        assert.equal(Object.keys(doc.paths).length, 13);
+        assert.equal(Object.keys(doc.paths).length, 15);
     });
 
     it('Error schema documents the four machine-readable codes', () => {
@@ -129,7 +134,7 @@ describe('zod contracts match the documented request bodies', () => {
         assert.ok(StatsQuerySchema.safeParse({ bucket: 'month', days: '30' }).success);
     });
 
-    it('get-context query: strict integer selectors', () => {
+    it('get-context query: at stays strict-int, version accepts ids (ARCH-001)', () => {
         assert.ok(StrictIntString.safeParse('0').success);
         assert.ok(StrictIntString.safeParse('-1').success);
         assert.ok(StrictIntString.safeParse('+2').success);
@@ -137,8 +142,68 @@ describe('zod contracts match the documented request bodies', () => {
         assert.ok(!StrictIntString.safeParse('1abc').success);
         assert.ok(!StrictIntString.safeParse(' 1 ').success);
 
+        // `at` is a message index — no id form, so it stays strict
+        assert.ok(GetContextQuerySchema.safeParse({ at: '5' }).success);
+        assert.ok(!GetContextQuerySchema.safeParse({ at: '1.9' }).success);
+        assert.ok(!GetContextQuerySchema.safeParse({ at: 'ctx_abc' }).success);
+
+        // `version` is an immutable id OR a deprecated positional index, and a
+        // query string cannot tell them apart — the gateway only rejects empty
         assert.ok(GetContextQuerySchema.safeParse({ version: '1', history: 'true' }).success);
-        assert.ok(!GetContextQuerySchema.safeParse({ version: '1.9' }).success);
+        assert.ok(GetContextQuerySchema.safeParse({ version: 'ctx_a1b2c3' }).success);
+        assert.ok(GetContextQuerySchema.safeParse({ version: '-1' }).success);
+        assert.ok(GetContextQuerySchema.safeParse({ version: '1.9' }).success); // core 404s it
+        assert.ok(!GetContextQuerySchema.safeParse({ version: '' }).success);
+    });
+
+    it('branch schemas: name rules mirror core, body is strict (ARCH-001)', () => {
+        for (const good of ['main', 'v1', 'release-1.2', 'feature_x', 'a'.repeat(64)]) {
+            assert.ok(BranchNameParamSchema.safeParse({ name: good }).success, `should accept ${good}`);
+        }
+        for (const bad of ['', '-lead', 'trail.', 'a..b', 'has space', 'has/slash', 'a'.repeat(65), 7]) {
+            assert.ok(
+                !BranchNameParamSchema.safeParse({ name: bad }).success,
+                `should reject ${JSON.stringify(bad)}`
+            );
+        }
+
+        // name is required; version may be an id string or an integer
+        assert.ok(CreateBranchSchema.safeParse({ name: 'main' }).success);
+        assert.ok(CreateBranchSchema.safeParse({ name: 'main', version: 'ctx_abc' }).success);
+        assert.ok(CreateBranchSchema.safeParse({ name: 'main', version: 3 }).success);
+        assert.ok(CreateBranchSchema.safeParse({ name: 'main', version: -1 }).success);
+        assert.ok(!CreateBranchSchema.safeParse({}).success);
+        assert.ok(!CreateBranchSchema.safeParse({ name: 'main', version: 1.5 }).success); // fractional
+        assert.ok(!CreateBranchSchema.safeParse({ name: 'main', version: '' }).success);
+        assert.ok(!CreateBranchSchema.safeParse({ branch: 'main' }).success); // strict: typo-safe
+        assert.ok(!CreateBranchSchema.safeParse({ name: 'main', extra: 1 }).success);
+
+        // the fork body takes the same widened version selector
+        assert.ok(CreateContextSchema.safeParse({ from: 'ctx_abc', version: 'ctx_def' }).success);
+        assert.ok(CreateContextSchema.safeParse({ from: 'ctx_abc', version: 1 }).success);
+        assert.ok(!CreateContextSchema.safeParse({ from: 'ctx_abc', version: 1.5 }).success);
+        // `at` has no id form — still strict
+        assert.ok(!CreateContextSchema.safeParse({ from: 'ctx_abc', at: 'ctx_def' }).success);
+    });
+
+    it('documents the immutable version id and the branch components', () => {
+        const doc = parse();
+        const version = doc.components.schemas.Version.properties as Record<
+            string,
+            { type?: string; deprecated?: boolean }
+        >;
+        assert.equal(version['id'].type, 'string');
+        assert.equal(version['id'].deprecated, undefined, 'id is the address to prefer');
+        assert.equal(version['version'].deprecated, true, 'positional index is the deprecated alias');
+
+        for (const name of ['BranchRef', 'BranchListResponse', 'CreateBranchInput']) {
+            assert.ok(doc.components.schemas[name], `missing component ${name}`);
+        }
+        const branch = doc.components.schemas.BranchRef.properties as Record<string, unknown>;
+        for (const field of ['name', 'version_id', 'version', 'created_at', 'updated_at']) {
+            assert.ok(branch[field], `BranchRef missing ${field}`);
+        }
+        assert.deepEqual(doc.components.schemas.CreateBranchInput.required, ['name']);
     });
 
     it('delete body: the three accepted shapes, nothing ambiguous', () => {

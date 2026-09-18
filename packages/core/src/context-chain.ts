@@ -81,7 +81,18 @@ export async function findHead(storage: StorageAdapter, rootId: string): Promise
     const pointedTo = new Set(branches.map((b) => b.prev_id).filter(Boolean));
     const heads = branches.filter((b) => !pointedTo.has(b.public_id));
 
-    return heads.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0] ?? null;
+    // Newest head wins. ISO-millisecond stamps collide routinely (a batch
+    // append writes several heads inside one millisecond), so a created_at-only
+    // sort leaves the winner dependent on storage return order — the ambiguity
+    // ARCH-001 closes. public_id descending is a total, deterministic order on
+    // ties: same data, same head, every time.
+    return (
+        heads.sort((a, b) => {
+            const byTime = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+            if (byTime !== 0) return byTime;
+            return a.public_id < b.public_id ? 1 : a.public_id > b.public_id ? -1 : 0;
+        })[0] ?? null
+    );
 }
 
 /**

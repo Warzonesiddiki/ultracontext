@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
-import { createContext, appendMessages, getContext } from '@ultracontext/core';
+import { createContext, appendMessages, getContext, createBranch, deleteBranch, listBranches } from '@ultracontext/core';
 import { createSqliteAdapter } from './index';
 
 // =============================================================================
@@ -75,5 +75,76 @@ describe('SqliteAdapter — core ops run local, no server', () => {
         if (!got.ok) return;
         assert.equal(got.data.data.length, 1);
         assert.equal(got.data.data[0].content, 'persisted');
+    });
+
+    it('pins named branches to immutable version ids (ARCH-001, real ON CONFLICT path)', async () => {
+        const url = tmpDbUrl();
+        const storage = await createSqliteAdapter(url);
+        const project = await storage.insertProject('test');
+        const projectId = project!.id;
+
+        const created = await createContext(storage, projectId, {});
+        assert.equal(created.ok, true);
+        if (!created.ok) return;
+        const contextId = created.data.id;
+        await appendMessages(storage, projectId, contextId, [{ role: 'user', content: 'v0' }]);
+
+        // pin a branch at the current head
+        const pinned = await createBranch(storage, projectId, contextId, { name: 'release-1' });
+        assert.equal(pinned.ok, true);
+        if (!pinned.ok) return;
+        assert.match(pinned.data.version_id, /^ctx_/);
+
+        // the chain grows underneath the pin — the id must not move
+        await appendMessages(storage, projectId, contextId, [{ role: 'user', content: 'v1' }]);
+        const listed = await listBranches(storage, projectId, contextId);
+        assert.equal(listed.ok, true);
+        if (!listed.ok) return;
+        assert.equal(listed.data.branches.length, 1);
+        assert.equal(listed.data.branches[0].version_id, pinned.data.version_id);
+
+        // that exact state is readable forever by its immutable id
+        const byId = await getContext(storage, projectId, contextId, { version: pinned.data.version_id });
+        assert.equal(byId.ok, true);
+
+        // move the branch (git `branch -f`) — created_at survives, updated_at advances
+        await new Promise((r) => setTimeout(r, 10));
+        const moved = await createBranch(storage, projectId, contextId, { name: 'release-1' });
+        assert.equal(moved.ok, true);
+        if (!moved.ok) return;
+        assert.equal(moved.data.created_at, pinned.data.created_at);
+        assert.notEqual(moved.data.version_id, pinned.data.version_id);
+        assert.ok(
+            new Date(moved.data.updated_at).getTime() > new Date(pinned.data.updated_at).getTime(),
+            'updated_at must advance when a branch moves'
+        );
+        // still one row: upsert, not insert
+        const afterMove = await listBranches(storage, projectId, contextId);
+        assert.equal(afterMove.ok, true);
+        if (afterMove.ok) assert.equal(afterMove.data.branches.length, 1);
+
+        // branch names survive a reconnect (they are ordinary persisted rows)
+        const reopened = await createSqliteAdapter(url);
+        const afterReopen = await listBranches(reopened, projectId, contextId);
+        assert.equal(afterReopen.ok, true);
+        if (afterReopen.ok) {
+            assert.equal(afterReopen.data.branches.length, 1);
+            assert.equal(afterReopen.data.branches[0].version_id, moved.data.version_id);
+        }
+
+        // delete removes the pointer only — the pinned version still reads back
+        const removed = await deleteBranch(reopened, projectId, contextId, 'release-1');
+        assert.equal(removed.ok, true);
+        if (removed.ok) assert.deepEqual(removed.data, { deleted: true, name: 'release-1' });
+
+        const empty = await listBranches(reopened, projectId, contextId);
+        if (empty.ok) assert.deepEqual(empty.data.branches, []);
+
+        const stillReadable = await getContext(reopened, projectId, contextId, { version: moved.data.version_id });
+        assert.equal(stillReadable.ok, true, 'deleting a branch must never destroy version data');
+
+        // a second delete is an honest false, which the API turns into a 404
+        const again = await deleteBranch(reopened, projectId, contextId, 'release-1');
+        assert.equal(again.ok, false);
     });
 });

@@ -16,6 +16,7 @@ After this guide, you'll be able to:
 -   Rewind to any point in time
 -   See exactly what your AI saw when it made a decision
 -   Find where things went wrong in seconds, not hours
+-   Address a version by an id that never changes, and give it a name
 
 ## Why View Context History?
 
@@ -71,28 +72,53 @@ data, version, versions = result["data"], result["version"], result["versions"]
   "data": [...],
   "version": 2,
   "versions": [
-    { "version": 0, "created_at": "2024-01-10T10:00:00Z", "operation": "create", "affected": null },
-    { "version": 1, "created_at": "2024-01-10T11:00:00Z", "operation": "update", "affected": ["msg_abc"] },
-    { "version": 2, "created_at": "2024-01-10T12:00:00Z", "operation": "delete", "affected": ["msg_xyz"] }
+    { "version": 0, "id": "ctx_9f2a1c", "created_at": "2024-01-10T10:00:00Z", "operation": "create", "affected": null },
+    { "version": 1, "id": "ctx_4b7e0d", "created_at": "2024-01-10T11:00:00Z", "operation": "update", "affected": ["msg_abc"] },
+    { "version": 2, "id": "ctx_c18f5a", "created_at": "2024-01-10T12:00:00Z", "operation": "delete", "affected": ["msg_xyz"] }
   ]
 }
 ```
 
+Every entry carries two addresses for the same state:
+
+-   **`id`** — the version's immutable id. It never moves and is never reused, so it is safe to store, share, and pin a branch to.
+-   **`version`** — the positional index, recomputed on every read. **Deprecated as a way to address a version**: it is still returned (and still accepted) so existing code keeps working, but the number a version has today is not guaranteed to be the number it has next month.
+
+<Warning>Save the `id`, not the index. If versions are removed or the chain is rewritten, `version: 3` can quietly come to mean a different state — the exact bug immutable ids exist to prevent. `ctx_4b7e0d` always means the same thing.</Warning>
+
 ## Time Travel
 
-Go back to any point: by version number, timestamp, or message index.
+Go back to any point: by version id, version number, timestamp, or message index.
 
-### By Version
+### By Version ID (preferred)
 
-Get exact state after a specific update or delete.
+Get the exact state a version id refers to — today, or a year from now.
+
+<CodeGroup>
+```typescript TypeScript
+const { data } = await uc.get(contextId, { version: 'ctx_4b7e0d' });
+```
+
+```python Python
+result = uc.get(context_id, version="ctx_4b7e0d")
+```
+</CodeGroup>
+
+An id that is not part of this context's chain is a `404`.
+
+### By Version Number (deprecated alias)
+
+Get exact state after a specific update or delete. Negative numbers count back from the head, so `-1` is the latest version.
 
 <CodeGroup>
 ```typescript TypeScript
 const { data } = await uc.get(contextId, { version: 1 });
+const { data } = await uc.get(contextId, { version: -1 }); // latest
 ```
 
 ```python Python
 result = uc.get(context_id, version=1)
+result = uc.get(context_id, version=-1)  # latest
 ```
 </CodeGroup>
 
@@ -145,7 +171,8 @@ Order of priority: version → filter by time → slice by index.
 ## Audit Trail
 
 Every update or delete automatically records:
-- **version** — sequential version number
+- **id** — immutable version id (the address to store)
+- **version** — sequential version number (deprecated as an address)
 - **operation** — create, update, or delete
 - **affected** — which message IDs changed
 - **created_at** — ISO timestamp
@@ -176,12 +203,14 @@ Retrieve with `history: true`:
   "versions": [
     {
       "version": 0,
+      "id": "ctx_9f2a1c",
       "operation": "create",
       "affected": null,
       "created_at": "2024-01-10T10:00:00Z"
     },
     {
       "version": 1,
+      "id": "ctx_4b7e0d",
       "operation": "update",
       "affected": ["msg_xyz"],
       "created_at": "2024-01-10T11:00:00Z",
@@ -193,6 +222,58 @@ Retrieve with `history: true`:
   ]
 }
 ```
+
+## Named Branches
+
+An id is immutable but not memorable. A **branch** pins a name you choose to a version id, so a team can talk about `before-refactor` instead of `ctx_4b7e0d` — and so a bookmark survives the chain growing underneath it.
+
+<CodeGroup>
+```typescript TypeScript
+// pin the current head
+await uc.setBranch(contextId, { name: 'release-1.2' });
+
+// pin an exact version, by id or by (deprecated) index
+await uc.setBranch(contextId, { name: 'before-refactor', version: 'ctx_4b7e0d' });
+
+// list them
+const { branches } = await uc.branches(contextId);
+// → [{ name: 'before-refactor', version_id: 'ctx_4b7e0d', version: 1, ... }]
+
+// read exactly what a branch points at
+const { data } = await uc.get(contextId, { version: branches[0].version_id });
+
+// move a branch (git `branch -f`): created_at is kept, updated_at advances
+await uc.setBranch(contextId, { name: 'release-1.2', version: -1 });
+
+// unpin — removes the NAME only, never the version data
+await uc.deleteBranch(contextId, 'release-1.2');
+```
+
+```python Python
+# pin the current head
+uc.set_branch(context_id, "release-1.2")
+
+# pin an exact version, by id or by (deprecated) index
+uc.set_branch(context_id, "before-refactor", version="ctx_4b7e0d")
+
+# list them
+branches = uc.branches(context_id)["branches"]
+# → [{"name": "before-refactor", "version_id": "ctx_4b7e0d", "version": 1, ...}]
+
+# read exactly what a branch points at
+result = uc.get(context_id, version=branches[0]["version_id"])
+
+# move a branch (git `branch -f`): created_at is kept, updated_at advances
+uc.set_branch(context_id, "release-1.2", version=-1)
+
+# unpin — removes the NAME only, never the version data
+uc.delete_branch(context_id, "release-1.2")
+```
+</CodeGroup>
+
+Branch names start with a letter or digit, may contain `[A-Za-z0-9._-]`, cannot contain `..` or end with `.` or `-`, and are at most 64 characters.
+
+<Info>Deleting a branch never deletes history — the version it pointed at stays readable by its `version_id`. If a branch's target version is removed by a hard delete, the branch survives and reports `version: -1`: the pin is orphaned, not broken.</Info>
 
 ## Examples
 

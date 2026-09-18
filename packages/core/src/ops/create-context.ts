@@ -8,6 +8,7 @@ import { buildNodeInsertRecords, findHead, getOrderedNodes, getVersions } from '
 import { generatePublicId } from '../public-ids';
 import { firstRow } from '../first-row';
 import { parseIndex } from '../request-parsing';
+import { resolveVersionSelection } from './get-context';
 import { ok, err, type Result } from '../result';
 
 // -- input --------------------------------------------------------------------
@@ -56,12 +57,12 @@ export async function createContext(
         const versions = await getVersions(storage, from);
 
         if (version !== undefined) {
-            const versionNum = parseIndex(version);
-            if (versionNum === null) return err('invalid_input', 'Invalid version');
-            if (versionNum < 0 || versionNum >= versions.length) {
-                return err('not_found', 'Version not found');
-            }
-            sourceHead = { public_id: versions[versionNum].head_id };
+            // ARCH-001: fork from an immutable version id OR a positional index
+            // (deprecated alias). Same resolver as GET /contexts/:id, so the two
+            // endpoints can never disagree about what a selector means.
+            const resolved = resolveVersionSelection(versions, version);
+            if (!resolved.ok) return resolved;
+            sourceHead = { public_id: resolved.data.headId };
         } else if (beforeTs !== undefined) {
             const targetVersion = versions.filter((v) => new Date(v.created_at).getTime() <= beforeTs).pop();
             if (!targetVersion) return err('not_found', 'No version found before timestamp');

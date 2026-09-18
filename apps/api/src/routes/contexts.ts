@@ -1,12 +1,15 @@
 import {
     appendMessages,
+    createBranch,
     createContext,
+    deleteBranch,
     deleteContextPermanent,
     deleteManyContexts,
     deleteMessages,
     getContext,
     getProjectActivity,
     isPlainObject,
+    listBranches,
     listContexts,
     parseLimit,
     updateMessages,
@@ -18,9 +21,11 @@ import { bodyLimit } from 'hono/body-limit';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { AppEnv, HttpApp, HttpContext } from '../types/http';
 import { RETRY_AFTER_SECONDS, errorResponse } from '../http-error';
-import { jsonV, optionalJsonV, queryV } from '../middleware/validate';
+import { jsonV, optionalJsonV, paramV, queryV } from '../middleware/validate';
 import {
     AppendInputSchema,
+    BranchNameParamSchema,
+    CreateBranchSchema,
     CreateContextSchema,
     DeleteInputSchema,
     DeleteManySchema,
@@ -29,6 +34,7 @@ import {
     SearchQuerySchema,
     StatsQuerySchema,
     UpdateBodySchema,
+    type CreateBranchBody,
 } from '../schemas';
 
 // -- request-body ceiling ------------------------------------------------------
@@ -366,4 +372,51 @@ export function registerContextRoutes(app: HttpApp) {
         if (!result.ok) return errorResponse(c, result);
         return c.json(result.data);
     });
+
+    // -- named branches (ARCH-001) ----------------------------------------------
+    //
+    // A branch name pins a stable, human-chosen handle to an immutable version
+    // id. Positional `?version=N` addressing still works everywhere as a
+    // deprecated alias — these routes ADD an addressing mode, they do not
+    // change an existing one. Deeper paths than /contexts/:id, so registration
+    // order against the :id routes is irrelevant (unlike /contexts/search).
+
+    // list branches — an empty list is a valid answer (branches are opt-in)
+    hono.get('/contexts/:id/branches', async (c: HttpContext) => {
+        const { projectId } = c.get('auth');
+        const storage = c.get('storage');
+
+        const result = await listBranches(storage, projectId, c.req.param('id'));
+        if (!result.ok) return errorResponse(c, result);
+        return c.json(result.data);
+    });
+
+    // create or MOVE a branch — PUT with git `branch -f` semantics: re-pinning
+    // an existing name preserves created_at and bumps updated_at, so the call is
+    // idempotent in effect and safe to retry. 200 (not 201) because the response
+    // is the branch's current state whether it was created or moved.
+    hono.put('/contexts/:id/branches', jsonBodyLimit, jsonV(CreateBranchSchema), async (c: HttpContext) => {
+        const { projectId } = c.get('auth');
+        const storage = c.get('storage');
+        const body = (await c.req.json()) as CreateBranchBody;
+
+        const result = await createBranch(storage, projectId, c.req.param('id'), body);
+        if (!result.ok) return errorResponse(c, result);
+        return c.json(result.data, 200);
+    });
+
+    // delete a branch — removes the POINTER only. Version data is never touched:
+    // unpinning a name must not be able to destroy history.
+    hono.delete(
+        '/contexts/:id/branches/:name',
+        paramV(BranchNameParamSchema),
+        async (c: HttpContext) => {
+            const { projectId } = c.get('auth');
+            const storage = c.get('storage');
+
+            const result = await deleteBranch(storage, projectId, c.req.param('id'), c.req.param('name'));
+            if (!result.ok) return errorResponse(c, result);
+            return c.json(result.data, 200);
+        }
+    );
 }

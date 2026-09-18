@@ -50,10 +50,15 @@ await uc.delete(ctx.id, -1); // v2
 // context is automatically versioned — fetch with history
 const { data, versions } = await uc.get(ctx.id, { history: true });
 // → versions: [
-//     { version: 0, operation: 'create', affected: null },
-//     { version: 1, operation: 'update', affected: ['msg_a'] },
+//     { version: 0, id: 'ctx_9f2a1c', operation: 'create', affected: null },
+//     { version: 1, id: 'ctx_4b7e0d', operation: 'update', affected: ['msg_a'] },
 //     ...
 // ]
+// `id` is the immutable address — store that, not the positional `version`
+
+// name a version so the reference is readable and stable
+await uc.setBranch(ctx.id, { name: 'before-refactor', version: 'ctx_4b7e0d' });
+const { branches } = await uc.branches(ctx.id);
 
 // use it with your favorite LLM framework
 const response = await generateText({ model, messages: data });
@@ -76,8 +81,8 @@ uc.delete(ctx["id"], -1)  # v2
 # context is automatically versioned — fetch with history
 result = uc.get(ctx["id"], history=True)
 # → result["versions"]: [
-#     {"version": 0, "operation": "create", "affected": None},
-#     {"version": 1, "operation": "update", "affected": ["msg_a"]},
+#     {"version": 0, "id": "ctx_9f2a1c", "operation": "create", "affected": None},
+#     {"version": 1, "id": "ctx_4b7e0d", "operation": "update", "affected": ["msg_a"]},
 #     ...
 # ]
 
@@ -86,7 +91,7 @@ response = generate_text(model=model, messages=result["data"])
 ```
 </CodeGroup>
 
-Every update and delete auto-creates a new version. Retrieve any previous state with a single call.
+Every update and delete auto-creates a new version. Retrieve any previous state with a single call, by an immutable version `id` that never changes meaning — or give that version a name with `setBranch()` / `branches()` / `deleteBranch()`.
 
 <Info>UltraContext is **framework-agnostic** and **schema-free**. Use it with any LLM provider and store context in any format you need.</Info>
 

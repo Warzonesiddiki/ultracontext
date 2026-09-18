@@ -447,7 +447,7 @@ curl -X POST https://api.ultracontext.ai/mcp \\
                 description:
                     'Get context with all messages. Returns latest version by default. Large contexts can be paged with `limit` (max 1,000) and `offset` — when either is supplied the response also includes `total` so you can walk the whole context. Omit both and the full context is returned, as always.',
                 mintContent:
-                    '<Info>The `versions` array is only returned when `?history=true`. To page a large context, pass `?limit=100&offset=0` and follow `offset` until you have `total` messages — omitting both always returns the full context, so nothing is ever silently truncated.</Info>',
+                    '<Info>The `versions` array is only returned when `?history=true`, and each entry carries an immutable `id` alongside its deprecated positional `version` — save the `id`, because indexes shift as the chain grows. To page a large context, pass `?limit=100&offset=0` and follow `offset` until you have `total` messages — omitting both always returns the full context, so nothing is ever silently truncated.</Info>',
                 codeSamples: [
                     {
                         lang: 'typescript',
@@ -455,11 +455,18 @@ curl -X POST https://api.ultracontext.ai/mcp \\
                         source: `// Get current version
 const { data, version } = await uc.get('ctx_abc123')
 
-// With version history
+// With version history — every entry carries an immutable id
 const { data, version, versions } = await uc.get('ctx_abc123', { history: true })
 
-// Get specific version
+// Get an exact version by its immutable id (preferred — never shifts)
+const { data } = await uc.get('ctx_abc123', { version: 'ctx_def456' })
+
+// …or by positional index (deprecated alias; -1 = latest)
 const { data } = await uc.get('ctx_abc123', { version: 1 })
+
+// Read whatever a named branch points at
+const { branches } = await uc.branches('ctx_abc123')
+const pinned = await uc.get('ctx_abc123', { version: branches[0].version_id })
 
 // Get at specific message index
 const { data } = await uc.get('ctx_abc123', { at: 5 })
@@ -473,11 +480,18 @@ const { data } = await uc.get('ctx_abc123', { before: '2024-01-15T10:30:00Z' })`
                         source: `# Get current version
 result = uc.get('ctx_abc123')
 
-# With version history
+# With version history — every entry carries an immutable id
 result = uc.get('ctx_abc123', history=True)
 
-# Get specific version
+# Get an exact version by its immutable id (preferred — never shifts)
+result = uc.get('ctx_abc123', version='ctx_def456')
+
+# ...or by positional index (deprecated alias; -1 = latest)
 result = uc.get('ctx_abc123', version=1)
+
+# Read whatever a named branch points at
+branches = uc.branches('ctx_abc123')['branches']
+pinned = uc.get('ctx_abc123', version=branches[0]['version_id'])
 
 # Get at specific message index
 result = uc.get('ctx_abc123', at=5)
@@ -496,8 +510,16 @@ curl https://api.ultracontext.ai/contexts/ctx_abc123 \\
 curl "https://api.ultracontext.ai/contexts/ctx_abc123?history=true" \\
   -H "Authorization: Bearer $API_KEY"
 
-# Get specific version
+# Get an exact version by its immutable id
+curl "https://api.ultracontext.ai/contexts/ctx_abc123?version=ctx_def456" \\
+  -H "Authorization: Bearer $API_KEY"
+
+# Get specific version by positional index (deprecated alias)
 curl "https://api.ultracontext.ai/contexts/ctx_abc123?version=1" \\
+  -H "Authorization: Bearer $API_KEY"
+
+# List named branches, then read whatever one points at
+curl "https://api.ultracontext.ai/contexts/ctx_abc123/branches" \\
   -H "Authorization: Bearer $API_KEY"
 
 # Get point-in-time state
@@ -517,8 +539,10 @@ curl "https://api.ultracontext.ai/contexts/ctx_abc123?before=2024-01-15T10:30:00
                         name: 'version',
                         in: 'query',
                         description:
-                            'Version number to retrieve (0-indexed). Defaults to latest.',
-                        schema: { type: 'integer' },
+                            'Version to retrieve — either an immutable version id (`ctx_…`, preferred) or a positional index (0-indexed, deprecated alias). Negative indexes count back from the head, so -1 is the latest. Defaults to latest. An id that is not part of the chain is a 404.',
+                        schema: {
+                            oneOf: [{ type: 'integer' }, { type: 'string' }],
+                        },
                     },
                     {
                         name: 'at',
@@ -859,6 +883,194 @@ curl -X DELETE https://api.ultracontext.ai/contexts/ctx_abc123 \\
                     ),
                     500: errorRef(
                         'Permanent delete aborted: the durable audit record could not be persisted — nothing was deleted (fail closed)'
+                    ),
+                },
+            },
+        },
+    },
+    {
+        path: '/contexts/{id}/branches',
+        operations: {
+            get: {
+                operationId: 'listBranches',
+                summary: 'List branches',
+                description:
+                    'List the named branches on a context, name-ascending. A branch pins a stable name to an immutable version id, so a reference you saved keeps pointing at the same state no matter how much the chain grows. Branches are opt-in: a context with none returns an empty list.',
+                mintContent:
+                    '<Info>Positional `?version=N` addressing still works everywhere as a deprecated alias — branches add a stable way to name a version, they do not remove the old one. Every branch also reports `version_id`, which you can pass straight back as `?version=<version_id>`.</Info>',
+                codeSamples: [
+                    {
+                        lang: 'typescript',
+                        label: 'TypeScript',
+                        source: `// Every branch on a context
+const { branches } = await uc.branches('ctx_abc123')
+
+// Read exactly what one of them points at
+const { data } = await uc.get('ctx_abc123', { version: branches[0].version_id })`,
+                    },
+                    {
+                        lang: 'python',
+                        label: 'Python',
+                        source: `# Every branch on a context
+branches = uc.branches('ctx_abc123')['branches']
+
+# Read exactly what one of them points at
+result = uc.get('ctx_abc123', version=branches[0]['version_id'])`,
+                    },
+                    {
+                        lang: 'bash',
+                        label: 'cURL',
+                        source: `curl https://api.ultracontext.ai/contexts/ctx_abc123/branches \\
+  -H "Authorization: Bearer $API_KEY"`,
+                    },
+                ],
+                parameters: [
+                    {
+                        name: 'id',
+                        in: 'path',
+                        required: true,
+                        description: 'Context ID (ctx_...)',
+                        schema: { type: 'string' },
+                    },
+                ],
+                responses: {
+                    200: { description: 'Branches on this context', schemaRef: 'BranchListResponse' },
+                    404: errorRef('Context not found (including a context owned by another project)'),
+                },
+            },
+            put: {
+                operationId: 'setBranch',
+                summary: 'Create or move a branch',
+                description:
+                    'Create a branch, or move an existing one to a different version — git `branch -f` semantics. PUT is used because the call is an idempotent "make this name point here": re-pinning an existing name preserves its `created_at` and bumps `updated_at`. Omit `version` to pin the current head.',
+                mintContent:
+                    '<Warning>Moving a branch is destructive to the NAME\'S previous target — the old version is untouched and still readable by its `version_id`, but the name no longer points at it. There is no undo stack; re-PUT the old id to move it back.</Warning>',
+                codeSamples: [
+                    {
+                        lang: 'typescript',
+                        label: 'TypeScript',
+                        source: `// Pin the current head
+const branch = await uc.setBranch('ctx_abc123', { name: 'release-1.2' })
+
+// Pin an exact, immutable version
+const pinned = await uc.setBranch('ctx_abc123', {
+  name: 'before-refactor',
+  version: 'ctx_def456',
+})
+
+// Move a branch (created_at survives, updated_at advances)
+const moved = await uc.setBranch('ctx_abc123', { name: 'release-1.2', version: -1 })`,
+                    },
+                    {
+                        lang: 'python',
+                        label: 'Python',
+                        source: `# Pin the current head
+branch = uc.set_branch('ctx_abc123', 'release-1.2')
+
+# Pin an exact, immutable version
+pinned = uc.set_branch('ctx_abc123', 'before-refactor', version='ctx_def456')
+
+# Move a branch (created_at survives, updated_at advances)
+moved = uc.set_branch('ctx_abc123', 'release-1.2', version=-1)`,
+                    },
+                    {
+                        lang: 'bash',
+                        label: 'cURL',
+                        source: `# Pin the current head
+curl -X PUT https://api.ultracontext.ai/contexts/ctx_abc123/branches \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "release-1.2"}'
+
+# Pin an exact version id
+curl -X PUT https://api.ultracontext.ai/contexts/ctx_abc123/branches \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "before-refactor", "version": "ctx_def456"}'`,
+                    },
+                ],
+                parameters: [
+                    {
+                        name: 'id',
+                        in: 'path',
+                        required: true,
+                        description: 'Context ID (ctx_...)',
+                        schema: { type: 'string' },
+                    },
+                ],
+                requestBody: { required: true, schemaRef: 'CreateBranchInput' },
+                responses: {
+                    200: {
+                        description: 'Branch created or moved — the branch state after the call',
+                        schemaRef: 'BranchRef',
+                    },
+                    400: errorRef(
+                        'Invalid branch name, fractional `version`, or an unknown body key'
+                    ),
+                    404: errorRef(
+                        'Context not found, or `version` is not an id/index in this chain'
+                    ),
+                },
+            },
+        },
+    },
+    {
+        path: '/contexts/{id}/branches/{name}',
+        operations: {
+            delete: {
+                operationId: 'deleteBranch',
+                summary: 'Delete a branch',
+                description:
+                    'Remove a branch name. This deletes the POINTER only — version data is never touched, so the version it pointed at stays readable by its id. Unpinning a name can never destroy history.',
+                codeSamples: [
+                    {
+                        lang: 'typescript',
+                        label: 'TypeScript',
+                        source: `const { deleted, name } = await uc.deleteBranch('ctx_abc123', 'release-1.2')`,
+                    },
+                    {
+                        lang: 'python',
+                        label: 'Python',
+                        source: `result = uc.delete_branch('ctx_abc123', 'release-1.2')`,
+                    },
+                    {
+                        lang: 'bash',
+                        label: 'cURL',
+                        source: `curl -X DELETE https://api.ultracontext.ai/contexts/ctx_abc123/branches/release-1.2 \\
+  -H "Authorization: Bearer $API_KEY"`,
+                    },
+                ],
+                parameters: [
+                    {
+                        name: 'id',
+                        in: 'path',
+                        required: true,
+                        description: 'Context ID (ctx_...)',
+                        schema: { type: 'string' },
+                    },
+                    {
+                        name: 'name',
+                        in: 'path',
+                        required: true,
+                        description: 'Branch name (same rules as when creating it)',
+                        schema: { type: 'string', maxLength: 64 },
+                    },
+                ],
+                responses: {
+                    200: {
+                        description: 'Branch name removed',
+                        jsonSchema: {
+                            type: 'object',
+                            properties: {
+                                deleted: { type: 'boolean', example: true },
+                                name: { type: 'string', example: 'release-1.2' },
+                            },
+                            required: ['deleted', 'name'],
+                        },
+                    },
+                    400: errorRef('Invalid branch name'),
+                    404: errorRef(
+                        'Context not found, or no branch with that name on this context'
                     ),
                 },
             },
@@ -1274,11 +1486,20 @@ export const openapiComponents = {
         },
         Version: {
             type: 'object',
-            description: 'Version history entry with audit trail',
+            description:
+                'Version history entry with audit trail. Address a version by `id`: the positional `version` index is a deprecated alias that shifts as the chain grows.',
             properties: {
+                id: {
+                    type: 'string',
+                    description:
+                        'Immutable version id (the version head\'s public id, ctx_…). Never reused and never renumbered, so it is safe to store, share, and pin a branch to. Pass it back as `?version=<id>` to read this exact state at any later time.',
+                    example: 'ctx_a1b2c3d4e5f6',
+                },
                 version: {
                     type: 'integer',
-                    description: '0-indexed version number',
+                    deprecated: true,
+                    description:
+                        'DEPRECATED 0-indexed positional number, computed at read time. Kept as an alias so existing clients keep working — but it changes meaning as versions are added or removed, so prefer `id` for anything you save.',
                     example: 0,
                 },
                 created_at: {
@@ -1303,6 +1524,72 @@ export const openapiComponents = {
                     additionalProperties: true,
                     description:
                         'User-provided audit metadata (e.g., reason, performed_by). Only present when provided.',
+                },
+            },
+        },
+        BranchRef: {
+            type: 'object',
+            description:
+                'A named branch: a stable, human-chosen handle pinned to an immutable version id.',
+            properties: {
+                name: {
+                    type: 'string',
+                    description:
+                        'Branch name. Starts with a letter or digit, then [A-Za-z0-9._-]; no "..", no trailing "." or "-", at most 64 characters.',
+                    example: 'release-1.2',
+                },
+                version_id: {
+                    type: 'string',
+                    description:
+                        'Immutable id of the pinned version head (ctx_…). Pass it as `?version=<version_id>` to read exactly this state, whenever you like.',
+                    example: 'ctx_a1b2c3d4e5f6',
+                },
+                version: {
+                    type: 'integer',
+                    deprecated: true,
+                    description:
+                        'DEPRECATED positional index of the pinned version, computed at read time. -1 means the pinned head is no longer part of the chain (its version node was deleted) — the name and `version_id` survive, the index cannot.',
+                    example: 3,
+                },
+                created_at: {
+                    type: 'string',
+                    format: 'date-time',
+                    description:
+                        'When the branch name was first created. Moving the branch does not change this.',
+                },
+                updated_at: {
+                    type: 'string',
+                    format: 'date-time',
+                    description: 'When the branch was last pointed at a new version.',
+                },
+            },
+        },
+        BranchListResponse: {
+            type: 'object',
+            properties: {
+                branches: {
+                    type: 'array',
+                    description: 'Branches on this context, name-ascending. Empty until you create one.',
+                    items: { $ref: '#/components/schemas/BranchRef' },
+                },
+            },
+        },
+        CreateBranchInput: {
+            type: 'object',
+            required: ['name'],
+            description:
+                'Create a branch, or move an existing one (git `branch -f` semantics). Unknown keys are rejected.',
+            properties: {
+                name: {
+                    type: 'string',
+                    description:
+                        'Branch name: starts alphanumeric, then [A-Za-z0-9._-], no "..", no trailing "." or "-", max 64 characters.',
+                    example: 'release-1.2',
+                },
+                version: {
+                    oneOf: [{ type: 'integer' }, { type: 'string' }],
+                    description:
+                        'Version to pin — an immutable version id (`ctx_…`, preferred) or a positional index (deprecated alias; negative counts back from the head). Omit to pin the current head.',
                 },
             },
         },
@@ -1362,9 +1649,9 @@ export const openapiComponents = {
                     description: 'Source context ID to copy from (optional)',
                 },
                 version: {
-                    type: 'integer',
+                    oneOf: [{ type: 'integer' }, { type: 'string' }],
                     description:
-                        'When forking with `from`, copy from this specific version (0-indexed)',
+                        'When forking with `from`, copy from this version — either its immutable id (`ctx_…`, preferred) or its positional index (0-indexed, deprecated alias). Negative indexes count back from the head, so -1 is the latest. An unknown id is a 404; a fractional number is a 400.',
                 },
                 at: {
                     type: 'integer',

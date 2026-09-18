@@ -37,10 +37,25 @@ export const nodes = pgTable('nodes', {
     context_id: text('context_id'),
 });
 
+// Named branches (ARCH-001, migration 0003): a project-scoped name pinned to an
+// immutable version head id. head_id has NO foreign key on purpose — the target
+// version node can be deleted later and an orphaned name is tolerated (readers
+// report version -1) rather than cascading someone's branch away.
+export const context_refs = pgTable('context_refs', {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    project_id: bigint('project_id', { mode: 'number' }).notNull(),
+    context_id: text('context_id').notNull(),
+    name: text('name').notNull(),
+    head_id: text('head_id').notNull(),
+    created_at: timestamp('created_at', { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+    updated_at: timestamp('updated_at', { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+});
+
 export const schema = {
     projects,
     api_keys,
     nodes,
+    context_refs,
 };
 
 export type ApiDb = PostgresJsDatabase<typeof schema>;

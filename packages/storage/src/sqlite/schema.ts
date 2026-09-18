@@ -37,13 +37,26 @@ export const nodes = sqliteTable('nodes', {
     context_id: text('context_id'),
 });
 
-export const schema = { projects, api_keys, nodes };
+export const context_refs = sqliteTable('context_refs', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    project_id: integer('project_id').notNull().references(() => projects.id, { onDelete: 'cascade' }),
+    context_id: text('context_id').notNull(),
+    name: text('name').notNull(),
+    // no FK by design (ARCH-001): the pinned version node can be deleted later
+    head_id: text('head_id').notNull(),
+    created_at: text('created_at').notNull().$defaultFn(isoNow),
+    updated_at: text('updated_at').notNull().$defaultFn(isoNow),
+});
+
+export const schema = { projects, api_keys, nodes, context_refs };
 
 // DDL applied on first open — superseded by the migration tooling
-// (../migrations/0001_init.ts + 0002 are the canonical baseline). Kept as an
-// export for compatibility; new code should go through migrateSqlite().
-// Matches the post-0002 database: UNIQUE constraints, FK ON DELETE CASCADE
-// (callers must run PRAGMA foreign_keys = ON for the cascade to apply).
+// (../migrations/0001_init.ts + 0002 + 0003 are the canonical baseline). Kept
+// as an export for compatibility; new code should go through migrateSqlite().
+// Matches the post-0003 database: UNIQUE constraints, FK ON DELETE CASCADE
+// (callers must run PRAGMA foreign_keys = ON for the cascade to apply), and the
+// context_refs named-branch table with the same index names the migration uses
+// so a bootstrapped database and a migrated one are indistinguishable.
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +88,22 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE INDEX IF NOT EXISTS idx_nodes_context_id ON nodes(context_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_project_type ON nodes(project_id, type);
 CREATE INDEX IF NOT EXISTS idx_api_keys_project_id ON api_keys(project_id);
+
+-- Named branches (ARCH-001, migration 0003): a project-scoped name pinned to
+-- an immutable version head id. head_id has no FK by design — the target
+-- version node can be deleted later and an orphaned name is tolerated.
+CREATE TABLE IF NOT EXISTS context_refs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    context_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    head_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_context_refs_project_context_name
+    ON context_refs(project_id, context_id, name);
+CREATE INDEX IF NOT EXISTS idx_context_refs_context ON context_refs(context_id);
 
 -- Full-text search index over message nodes (not version heads).
 -- Search is a free, first-class capability — there is no quota and no paywall.

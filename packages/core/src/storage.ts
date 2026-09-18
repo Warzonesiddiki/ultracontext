@@ -55,6 +55,26 @@ export type ProjectRow = {
     id: number;
 };
 
+// -- Named branches (ARCH-001) ------------------------------------------------
+//
+// A context_ref pins a human-chosen name to an immutable version head id.
+// Unlike a positional version index — which silently changes meaning as new
+// versions are appended — head_id never moves, so a saved reference keeps
+// pointing at the same state forever.
+//
+// head_id deliberately has NO foreign key: the version node it points at can
+// be removed later (permanent delete of a context, message pruning), and an
+// orphaned branch name is tolerable — readers report version -1 for it rather
+// than failing the write that created the name.
+export type ContextRefRow = {
+    project_id: number;
+    context_id: string;
+    name: string;
+    head_id: string;
+    created_at: string;
+    updated_at: string;
+};
+
 // -- Metadata filters for listing contexts ------------------------------------
 
 export type ContextFilters = {
@@ -170,6 +190,19 @@ export interface StorageAdapter {
     // Adapters aggregate in the database where possible; never throws for an
     // empty project (returns []).
     projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]>;
+
+    // named branches (ARCH-001) — a project-scoped name pinned to a version
+    // head. Every method here MUST be project-scoped: branch names are tenant
+    // data, and an unscoped lookup is the same cross-tenant leak as SEC-001.
+    /** All branch names on one context, in a stable (name-ascending) order. */
+    findContextRefs(projectId: number, contextId: string): Promise<ContextRefRow[]>;
+    /**
+     * Create-or-move a branch name (git `branch -f` semantics): an existing
+     * name keeps its `created_at` and bumps `updated_at`.
+     */
+    upsertContextRef(values: { project_id: number; context_id: string; name: string; head_id: string }): Promise<ContextRefRow>;
+    /** Delete a branch name. Never touches version data. False if absent. */
+    deleteContextRef(projectId: number, contextId: string, name: string): Promise<boolean>;
 
     // projects
     insertProject(name: string): Promise<ProjectRow | null>;

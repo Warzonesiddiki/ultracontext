@@ -132,7 +132,7 @@ describe('zod gate — query parameters', () => {
         assert.ok(Array.isArray(body.data));
     });
 
-    it('rejects strict-int violations on /contexts/:id selectors', async () => {
+    it('rejects strict-int violations on ?at=; ?version= is an id or an index (ARCH-001)', async () => {
         const { req, apiKey } = await setupTestApp();
         const res = await req('/contexts', {
             method: 'POST',
@@ -142,11 +142,26 @@ describe('zod gate — query parameters', () => {
         assert.equal(res.status, 201);
         const { id } = (await res.json()) as { id: string };
 
-        assert.equal((await req(`/contexts/${id}?version=1.9`, { auth: apiKey })).status, 400);
+        // `at` is a message index with no id form — still strict at the gate
         assert.equal((await req(`/contexts/${id}?at=1abc`, { auth: apiKey })).status, 400);
-        assert.equal((await req(`/contexts/${id}?version=%201%20`, { auth: apiKey })).status, 400);
-        // valid selectors still work
+        assert.equal((await req(`/contexts/${id}?at=1.9`, { auth: apiKey })).status, 400);
+
+        // `version` now addresses an immutable id as well as a positional index,
+        // so the gate only rejects the empty value; core resolves the rest. A
+        // non-integer string is an id that does not exist → 404, never a silent
+        // parseInt-style resolution to a real version.
+        assert.equal((await req(`/contexts/${id}?version=`, { auth: apiKey })).status, 400);
+        assert.equal((await req(`/contexts/${id}?version=1.9`, { auth: apiKey })).status, 404);
+        assert.equal((await req(`/contexts/${id}?version=%201%20`, { auth: apiKey })).status, 404);
+        // valid selectors still work — index form and id form
         assert.equal((await req(`/contexts/${id}?version=0`, { auth: apiKey })).status, 200);
+        const history = (await (
+            await req(`/contexts/${id}?history=true`, { auth: apiKey })
+        ).json()) as { versions: Array<{ id: string }> };
+        assert.equal(
+            (await req(`/contexts/${id}?version=${history.versions[0].id}`, { auth: apiKey })).status,
+            200
+        );
     });
 
     it('search requires q; stats validates bucket and days', async () => {

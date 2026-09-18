@@ -220,29 +220,57 @@ describe('getContext', () => {
         assert.equal(result.message, 'Version not found');
     });
 
-    it('returns not_found for a negative version index', async () => {
+    it('resolves a negative version index back from the head (ARCH-001: -1 = latest)', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
-        const { rootId } = await seedContext(storage, project!.id, { messages: [{ text: 'v0' }] });
+        const seed = await seedContext(storage, project!.id, { messages: [{ text: 'v0' }] });
+        stampCreatedAt(storage, seed.headId, '2026-01-01T00:00:00.000Z');
+        const head1 = await addVersion(storage, project!.id, seed.rootId, seed.headId, 'update', [{ text: 'v1' }]);
+        stampCreatedAt(storage, head1, '2026-01-02T00:00:00.000Z');
 
-        const result = await getContext(storage, project!.id, rootId, { version: -1 });
+        // -1 counts back from the head (git / Python style) instead of 404ing
+        const latest = await getContext(storage, project!.id, seed.rootId, { version: -1 });
+        assert.equal(latest.ok, true);
+        if (latest.ok) {
+            assert.equal(latest.data.version, 1);
+            assert.equal(latest.data.data[0].text, 'v1');
+        }
 
-        assert.equal(result.ok, false);
-        assert.equal(result.code, 'not_found');
-        assert.equal(result.message, 'Version not found');
+        const oldest = await getContext(storage, project!.id, seed.rootId, { version: -2 });
+        assert.equal(oldest.ok, true);
+        if (oldest.ok) assert.equal(oldest.data.version, 0);
+
+        // …but only as far back as the chain actually goes
+        const tooFar = await getContext(storage, project!.id, seed.rootId, { version: -99 });
+        assert.equal(tooFar.ok, false);
+        if (!tooFar.ok) {
+            assert.equal(tooFar.code, 'not_found');
+            assert.equal(tooFar.message, 'Version not found');
+        }
     });
 
-    it('returns invalid_input for a malformed version (API-002: no parseInt leaks)', async () => {
+    it('rejects malformed versions with no parseInt leak (API-002, ARCH-001 codes)', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
         const { rootId } = await seedContext(storage, project!.id, { messages: [{ text: 'v0' }] });
 
-        // 'abc' used to resolve via NaN-handling; malformed selectors must be
-        // rejected (400), never silently resolved to a real version.
-        for (const bad of ['abc', '1abc', '1.9', ' 1 ']) {
+        // Non-integer NUMBERS are unambiguously malformed → invalid_input (400).
+        // Only a JSON body can carry these; a query string never can.
+        for (const bad of [1.9, NaN, Infinity, '']) {
             const result = await getContext(storage, project!.id, rootId, { version: bad });
             assert.equal(result.ok, false, `should reject ${JSON.stringify(bad)}`);
             if (!result.ok) assert.equal(result.code, 'invalid_input');
+        }
+
+        // Non-integer STRINGS are read as immutable version ids (ARCH-001), so a
+        // typo is indistinguishable from an id that does not exist → not_found
+        // (404). The API-002 guarantee is what matters and still holds: none of
+        // these silently resolves to a real version, which parseInt would have
+        // done ('1abc' → 1, ' 1 ' → 1).
+        for (const unknown of ['abc', '1abc', '1.9', ' 1 ', 'ctx_doesnotexist']) {
+            const result = await getContext(storage, project!.id, rootId, { version: unknown });
+            assert.equal(result.ok, false, `should reject ${JSON.stringify(unknown)}`);
+            if (!result.ok) assert.equal(result.code, 'not_found');
         }
     });
 

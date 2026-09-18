@@ -36,6 +36,21 @@ export const Metadata = z.record(z.unknown());
  *  (core parseIndex handles both). */
 const VersionSelector = z.union([z.number().int(), StrictIntString]);
 
+/**
+ * `version` selector for JSON bodies (ARCH-001).
+ *
+ * Two addressing modes coexist: an immutable version id (`ctx_…`, the mode new
+ * code should use) and a positional index (deprecated alias, kept so nothing
+ * that works today breaks). A JSON number must still be an INTEGER — a
+ * fractional index is meaningless and 400s here rather than reaching core. A
+ * string is passed through untouched: only core can tell an index string from
+ * an id, and it owns the 404 for an unknown one.
+ *
+ * `at` deliberately does NOT use this: it is a message index with no id form,
+ * so it stays a strict integer (StrictIntString).
+ */
+const BodyVersionSelector = z.union([z.number().int(), z.string().min(1)]);
+
 // -- POST /contexts (create) ----------------------------------------------------
 
 // Strict: unknown keys 400 — `{form: …}` must never silently create a context
@@ -44,7 +59,7 @@ const VersionSelector = z.union([z.number().int(), StrictIntString]);
 export const CreateContextSchema = z
     .object({
         from: z.string().min(1).optional(),
-        version: VersionSelector.optional(),
+        version: BodyVersionSelector.optional(),
         at: VersionSelector.optional(),
         before: z.string().optional(),
         metadata: Metadata.optional(),
@@ -105,14 +120,22 @@ export type StatsQuery = z.infer<typeof StatsQuerySchema>;
 
 // -- GET /contexts/:id --------------------------------------------------------------
 
-// history: any string passes (the route interprets === 'true'); version/at are
-// strict integer strings (core parseIndex rejects everything else with 400).
+// history: any string passes (the route interprets === 'true'); `at` is a strict
+// integer string (core parseIndex rejects everything else with 400).
+//
+// `version` is NOT strict-int any more (ARCH-001): it accepts an immutable
+// version id (`ctx_…`) as well as the deprecated positional index. A query
+// string cannot distinguish the two, and the gateway must not guess — so zod
+// only rejects the empty value and core resolves the selector, returning 404
+// for an id that is not in the chain. Malformed *numeric* input is still
+// impossible to mistake for an id: '1abc' and ' 1 ' simply are not versions.
+//
 // Pagination (API-010): `limit` is digit-only and clamped to [1, 1000] in the
 // route; `offset` is digit-only (non-negative by construction). ABSENT
 // limit+offset means "return everything" — the response shape is unchanged,
 // so no existing client (SDKs, MCP, dashboards) ever sees a truncated page.
 export const GetContextQuerySchema = z.object({
-    version: StrictIntString.optional(),
+    version: z.string().min(1).optional(),
     at: StrictIntString.optional(),
     before: z.string().optional(),
     history: z.string().optional(),
@@ -120,6 +143,43 @@ export const GetContextQuerySchema = z.object({
     offset: LimitString.optional(),
 });
 export type GetContextQuery = z.infer<typeof GetContextQuerySchema>;
+
+// -- /contexts/:id/branches (ARCH-001) -------------------------------------------
+//
+// A named branch pins a human-chosen name to an immutable version id, so a
+// saved reference keeps meaning the same thing as the chain grows. The name
+// rules below MIRROR core `isValidBranchName` byte-for-byte (same discipline as
+// StrictIntString/parseIndex): the gateway rejects bad names early with a
+// consistent 400, and core owns the canonical rule text for callers that reach
+// it directly (SDKs, MCP, in-process use).
+export const BRANCH_NAME_MAX_LEN = 64;
+
+export const BranchName = z
+    .string()
+    .min(1, 'name is required')
+    .max(BRANCH_NAME_MAX_LEN, `name must be at most ${BRANCH_NAME_MAX_LEN} characters`)
+    .regex(
+        /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
+        'name must start with a letter or digit and contain only [A-Za-z0-9._-]'
+    )
+    .refine((v) => !v.includes('..'), { message: "name must not contain '..'" })
+    .refine((v) => !v.endsWith('.') && !v.endsWith('-'), {
+        message: "name must not end with '.' or '-'",
+    });
+
+/** Path param for DELETE /contexts/:id/branches/:name. */
+export const BranchNameParamSchema = z.object({ name: BranchName });
+export type BranchNameParam = z.infer<typeof BranchNameParamSchema>;
+
+// Strict: an unknown key (e.g. `{branch: 'main'}`) must 400 rather than
+// silently pin a nameless branch. `version` omitted → pin the current head.
+export const CreateBranchSchema = z
+    .object({
+        name: BranchName,
+        version: BodyVersionSelector.optional(),
+    })
+    .strict();
+export type CreateBranchBody = z.infer<typeof CreateBranchSchema>;
 
 // -- POST /contexts/delete-many --------------------------------------------------------
 

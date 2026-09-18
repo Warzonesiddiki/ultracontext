@@ -1,13 +1,14 @@
 -- =============================================================================
 -- UltraContext Postgres schema — GENERATED from the migration registry.
 -- Single source of truth: packages/storage/src/migrations/
--- (0001_init.ts, postgres.up.sql content). After changing a migration, paste
--- the cumulative result here so new Supabase deployments start in sync.
+-- (0001_init.ts, 0002_sqlite_constraints.ts, 0003_context_refs.ts — the
+-- cumulative postgres.up.sql result). After changing a migration, paste the
+-- cumulative result here so new Supabase deployments start in sync.
 --
 -- New Supabase deployments run THIS file once (SQL editor / init script).
--- The schema_migrations bootstrap below stamps version 1 so direct
--- Postgres/Drizzle clients (which auto-migrate on connect) treat the
--- database as current.
+-- The schema_migrations bootstrap below stamps every version this file
+-- contains (1..3) so direct Postgres/Drizzle clients (which auto-migrate on
+-- connect) treat the database as current instead of re-applying DDL.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -15,7 +16,10 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     name TEXT NOT NULL,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-INSERT INTO schema_migrations (version, name) VALUES (1, 'init')
+INSERT INTO schema_migrations (version, name) VALUES
+  (1, 'init'),
+  (2, 'sqlite-unique-and-fk-cascade'),
+  (3, 'context-refs-named-branches')
   ON CONFLICT (version) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -65,6 +69,27 @@ CREATE INDEX IF NOT EXISTS idx_nodes_metadata
 
 CREATE INDEX IF NOT EXISTS idx_api_keys_project_id
   ON api_keys (project_id);
+
+-- Named branches (ARCH-001, migration 0003): a project-scoped name pinned to an
+-- immutable version head id, so a saved reference keeps meaning the same thing
+-- as the chain grows. head_id has NO foreign key by design — the version node it
+-- points at can be deleted later, and an orphaned name is tolerated (readers
+-- report version -1) instead of cascading someone's branch away.
+CREATE TABLE IF NOT EXISTS context_refs (
+  id BIGSERIAL PRIMARY KEY,
+  project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  context_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  head_id TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_context_refs_project_context_name
+  ON context_refs (project_id, context_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_context_refs_context
+  ON context_refs (context_id);
 
 CREATE OR REPLACE VIEW project_activity_daily
   WITH (security_invoker = on) AS

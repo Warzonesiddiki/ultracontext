@@ -11,6 +11,7 @@ export type {
     ApiKeyRow,
     ApiKeyPublic,
     ProjectRow,
+    ContextRefRow,
     ContextFilters,
     SearchFilters,
     SearchHit,
@@ -60,8 +61,20 @@ export { DEFAULT_ACTIVITY_DAYS, MAX_ACTIVITY_BUCKETS } from './ops/analytics';
 export { createContext } from './ops/create-context';
 export type { CreateContextInput } from './ops/create-context';
 
-export { getContext } from './ops/get-context';
-export type { GetContextOptions } from './ops/get-context';
+export { getContext, resolveVersionSelection, classifyVersionSelection } from './ops/get-context';
+export type { GetContextOptions, ResolvedVersion, VersionSelection } from './ops/get-context';
+
+// -- named branches (ARCH-001): stable names over immutable version ids --------
+
+export {
+    listBranches,
+    createBranch,
+    deleteBranch,
+    isValidBranchName,
+    MAX_BRANCH_NAME_LEN,
+    BRANCH_NAME_ERROR,
+} from './ops/branches';
+export type { BranchRef, SetBranchInput } from './ops/branches';
 
 export { appendMessages } from './ops/append-messages';
 

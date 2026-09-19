@@ -47,7 +47,7 @@
       "get": {
         "operationId": "liveness",
         "summary": "Liveness probe",
-        "description": "Returns 200 while the process is up and serving. Unauthenticated — for load balancers and orchestrators.",
+        "description": "Returns 200 while the process is up and serving, plus the version-chain integrity counters. Unauthenticated — for load balancers and orchestrators.",
         "responses": {
           "200": {
             "description": "Service is alive",
@@ -55,12 +55,47 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "status",
+                    "chain_health"
+                  ],
                   "properties": {
                     "status": {
                       "type": "string",
                       "enum": [
                         "ok"
-                      ]
+                      ],
+                      "description": "Always \"ok\" while the process serves. A damaged version chain does NOT change it: that is data, not a dead process, and a probe that failed on it would restart a healthy server without fixing anything. Alert on chain_health.fallbacks instead."
+                    },
+                    "chain_health": {
+                      "type": "object",
+                      "required": [
+                        "fallbacks",
+                        "nodes_lost",
+                        "contexts_affected",
+                        "last_fallback_at"
+                      ],
+                      "description": "Version-chain integrity, counted in this process since it started (a restart zeroes them). Message order is a prev_id linked list; when a read cannot walk it, ordering falls back to the persisted ordinal, then created_at, then the unique id, and the event is counted here. Nothing is ever transmitted anywhere — UltraContext has no telemetry; scrape this endpoint and alert locally. The context id involved is deliberately NOT reported here because this probe is unauthenticated: it is in the server log line instead.",
+                      "properties": {
+                        "fallbacks": {
+                          "type": "integer",
+                          "description": "Reads that had to fall back because a prev_id chain was broken."
+                        },
+                        "nodes_lost": {
+                          "type": "integer",
+                          "description": "Nodes those walks failed to reach, summed across fallbacks."
+                        },
+                        "contexts_affected": {
+                          "type": "integer",
+                          "description": "Distinct contexts that had at least one fallback."
+                        },
+                        "last_fallback_at": {
+                          "type": "string",
+                          "format": "date-time",
+                          "nullable": true,
+                          "description": "When the most recent fallback happened; null if there has been none."
+                        }
+                      }
                     }
                   }
                 }

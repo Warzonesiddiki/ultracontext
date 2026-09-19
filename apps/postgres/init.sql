@@ -1,13 +1,14 @@
 -- =============================================================================
 -- UltraContext Postgres schema — GENERATED from the migration registry.
 -- Single source of truth: packages/storage/src/migrations/
--- (0001_init.ts, 0002_sqlite_constraints.ts, 0003_context_refs.ts — the
--- cumulative postgres.up.sql result). After changing a migration, paste the
--- cumulative result here so new Supabase deployments start in sync.
+-- (0001_init.ts, 0002_sqlite_constraints.ts, 0003_context_refs.ts,
+-- 0004_node_ordinal.ts — the cumulative postgres.up.sql result). After changing
+-- a migration, paste the cumulative result here so new Supabase deployments
+-- start in sync.
 --
 -- New Supabase deployments run THIS file once (SQL editor / init script).
 -- The schema_migrations bootstrap below stamps every version this file
--- contains (1..3) so direct Postgres/Drizzle clients (which auto-migrate on
+-- contains (1..4) so direct Postgres/Drizzle clients (which auto-migrate on
 -- connect) treat the database as current instead of re-applying DDL.
 -- =============================================================================
 
@@ -19,7 +20,8 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 INSERT INTO schema_migrations (version, name) VALUES
   (1, 'init'),
   (2, 'sqlite-unique-and-fk-cascade'),
-  (3, 'context-refs-named-branches')
+  (3, 'context-refs-named-branches'),
+  (4, 'node-ordinal-chain-order')
   ON CONFLICT (version) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS projects (
@@ -49,11 +51,20 @@ CREATE TABLE IF NOT EXISTS nodes (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   parent_id TEXT,
   prev_id TEXT,
-  context_id TEXT
+  context_id TEXT,
+  -- Explicit position within the context_id partition (ARCH-002, migration
+  -- 0004). The prev_id chain stays authoritative for message order; ordinal is
+  -- what makes the BROKEN-chain fallback total instead of leaving it to
+  -- ISO-millisecond timestamps that tie, and it lets HEAD be picked by real
+  -- write order. Nullable: root contexts belong to no partition.
+  ordinal BIGINT
 );
 
 CREATE INDEX IF NOT EXISTS idx_nodes_project_type_context
   ON nodes (project_id, type, context_id);
+
+CREATE INDEX IF NOT EXISTS idx_nodes_context_ordinal
+  ON nodes (context_id, ordinal);
 
 CREATE INDEX IF NOT EXISTS idx_nodes_context
   ON nodes (context_id);

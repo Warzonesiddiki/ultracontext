@@ -4,7 +4,7 @@
 // =============================================================================
 
 import type { StorageAdapter } from '../storage';
-import { findHead, getOrderedNodes, getVersions } from '../context-chain';
+import { findHead, getOrderedNodes, getVersions, nextOrdinal } from '../context-chain';
 import { generatePublicId } from '../public-ids';
 import { isPlainObject, parseUpdateRequestBody } from '../request-parsing';
 import type { MessageView } from '../message-view';
@@ -73,7 +73,7 @@ export async function updateMessages(
 
     // build updated node copies — copy-on-write, merging changes onto targets
     const newHeadId = generatePublicId('context');
-    const newNodes = orderedNodes.map((n) => {
+    const newNodes = orderedNodes.map((n, i) => {
         const update = updateMap.get(n.public_id);
         const { id: _id, ...changes } = update ?? { id: null };
         return {
@@ -83,6 +83,8 @@ export async function updateMessages(
             context_id: newHeadId,
             parent_id: n.public_id,
             prev_id: null as string | null,
+            // snapshot copy: a fresh partition, numbered in write order (ARCH-002)
+            ordinal: i,
             content: update ? { ...n.content, ...changes } : n.content,
             metadata: n.metadata,
         };
@@ -102,6 +104,7 @@ export async function updateMessages(
         type: 'context' as const,
         context_id: root.public_id,
         prev_id: currentHead.public_id,
+        ordinal: await nextOrdinal(storage, root.public_id),
         content: {},
         metadata: { operation: 'update', affected: affectedIds, child_count: newNodes.length, ...(userMetadata ?? {}) },
     };

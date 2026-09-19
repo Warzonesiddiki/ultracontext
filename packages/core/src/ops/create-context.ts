@@ -129,6 +129,9 @@ export async function createContext(
                 type: 'context',
                 context_id: rootId,
                 prev_id: null,
+                // first head of a brand-new root, so its partition is empty and
+                // the ordinal starts at 0 (ARCH-002)
+                ordinal: 0,
                 content: {},
                 metadata: { operation: 'create', child_count: insertRecords.length },
             },

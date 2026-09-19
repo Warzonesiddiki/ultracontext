@@ -15,6 +15,13 @@ export type NodeRow = {
     parent_id: string | null;
     prev_id: string | null;
     context_id: string | null;
+    /**
+     * Persisted position within this node's `context_id` partition (ARCH-002),
+     * written in the same insert that writes `prev_id` so the two can never
+     * disagree. Null on rows written before migration 0004 — ordering treats a
+     * missing ordinal as "sorts last" rather than guessing.
+     */
+    ordinal: number | null;
 };
 
 export type NodeInsertRow = {
@@ -26,6 +33,12 @@ export type NodeInsertRow = {
     context_id?: string | null;
     parent_id?: string | null;
     prev_id?: string | null;
+    /**
+     * Position in the `context_id` partition. Core write paths always set it
+     * (see buildNodeInsertRecords / nextOrdinal); adapters persist whatever
+     * they are given and leave it null when omitted.
+     */
+    ordinal?: number | null;
     /**
      * ISO 8601 timestamp to store verbatim. Omit for "now".
      * Used by import/restore so a restored context keeps its original
@@ -147,7 +160,7 @@ export type ActivityRow = {
 export interface StorageAdapter {
     // nodes — queries
     findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]>;
-    findContextBranches(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'prev_id' | 'created_at'>[]>;
+    findContextBranches(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'prev_id' | 'created_at' | 'ordinal'>[]>;
     findVersions(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'created_at' | 'metadata'>[]>;
     findNonContextNodes(contextId: string): Promise<NodeRow[]>;
     /**

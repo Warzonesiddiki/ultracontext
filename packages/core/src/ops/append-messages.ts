@@ -2,7 +2,7 @@
 // APPEND MESSAGES — append messages to a context (ported from POST /contexts/:id)
 // =============================================================================
 
-import { buildNodeInsertRecords, findHead, getOrderedNodes, getVersions } from '../context-chain';
+import { buildNodeInsertRecords, findHead, getOrderedNodes, getVersions, nextOrdinal } from '../context-chain';
 import { MAX_MESSAGES_PER_APPEND, MAX_MESSAGES_PER_CONTEXT } from '../constants';
 import { generatePublicId } from '../public-ids';
 import type { MessageView } from '../message-view';
@@ -79,7 +79,12 @@ export async function appendMessages(
             // so the head and its messages can never commit separately and a
             // crash mid-op can never leave an orphaned head.
             const newHeadId = generatePublicId('context');
+            // The messages land in a brand-new partition (context_id = the new
+            // head id), so they number from 0. The head lands in the root's
+            // version partition, which already holds every previous head — its
+            // ordinal continues from the highest one there (ARCH-002).
             const insertRecords = buildNodeInsertRecords(nodeInputs, projectId, newHeadId, tailPublicId);
+            const headOrdinal = await nextOrdinal(tx, root.public_id);
             let createdMessages;
             const headRecord = {
                 public_id: newHeadId,
@@ -87,6 +92,7 @@ export async function appendMessages(
                 type: 'context' as const,
                 context_id: root.public_id,
                 prev_id: head.public_id,
+                ordinal: headOrdinal,
                 content: {},
                 metadata: { operation: 'append', child_count: insertRecords.length },
             };

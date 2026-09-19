@@ -147,4 +147,53 @@ describe('SqliteAdapter — core ops run local, no server', () => {
         const again = await deleteBranch(reopened, projectId, contextId, 'release-1');
         assert.equal(again.ok, false);
     });
+
+    it('persists the chain ordinal in a real SQLite file (ARCH-002)', async () => {
+        const url = tmpDbUrl();
+        const storage = await createSqliteAdapter(url);
+        const project = await storage.insertProject('test');
+        const projectId = project!.id;
+
+        const created = await createContext(storage, projectId, {});
+        assert.equal(created.ok, true);
+        if (!created.ok) return;
+        const contextId = created.data.id;
+
+        await appendMessages(storage, projectId, contextId, [{ role: 'user', content: 'a' }]);
+        await appendMessages(storage, projectId, contextId, [
+            { role: 'assistant', content: 'b' },
+            { role: 'user', content: 'c' },
+        ]);
+
+        // version heads carry a gap-free ordinal, in write order
+        const heads = await storage.findContextBranches(contextId);
+        const ordinals = (rows: { ordinal: number | null }[]) =>
+            rows.map((r) => r.ordinal).sort((a, b) => Number(a) - Number(b));
+        assert.deepEqual(ordinals(heads), [0, 1, 2]);
+
+        // the projection is honoured: ask for ordinal and get ordinal. An
+        // adapter that ignored `columns` would hand back undefined, which
+        // nextOrdinal cannot tell from an empty partition — every append would
+        // then restart the head numbering at 0.
+        const projected = await storage.findNodesByContextId(contextId, ['public_id', 'ordinal']);
+        assert.equal(projected.length, 3);
+        assert.deepEqual(Object.keys(projected[0]).sort(), ['ordinal', 'public_id']);
+        assert.ok(projected.every((row) => typeof row.ordinal === 'number'));
+
+        const defaulted = await storage.findNodesByContextId(contextId);
+        assert.deepEqual(Object.keys(defaulted[0]).sort(), ['prev_id', 'public_id'], 'the default stays narrow');
+
+        // messages are numbered inside their own head's partition, from 0
+        const newest = heads.find((h) => h.ordinal === 2)!;
+        const messages = await storage.findNonContextNodes(newest.public_id);
+        assert.deepEqual(messages.map((m) => m.ordinal), [0, 1]);
+
+        // …and it is really in the file, not just in the connection
+        const reopened = await createSqliteAdapter(url);
+        assert.deepEqual(ordinals(await reopened.findContextBranches(contextId)), [0, 1, 2]);
+
+        const read = await getContext(reopened, projectId, contextId, {});
+        assert.equal(read.ok, true);
+        if (read.ok) assert.deepEqual(read.data.data.map((m) => m.content), ['a', 'b', 'c']);
+    });
 });

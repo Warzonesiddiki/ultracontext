@@ -29,13 +29,22 @@ export type { MessageView } from './message-view';
 
 export {
     orderNodes,
+    compareByOrdinalThenTime,
     buildNodeInsertRecords,
     findTail,
     findHead,
+    nextOrdinal,
     getOrderedNodes,
     getVersions,
 } from './context-chain';
-export type { NodeInsertInput, VersionInfo } from './context-chain';
+export type { NodeInsertInput, VersionInfo, OrderableNode, OrderNodesMeta } from './context-chain';
+
+// -- chain health (ARCH-002) --------------------------------------------------
+// The prev_id chain is the authoritative message order; when a walk of it comes
+// up short, ordering falls back and THIS fires. In-process counters + a
+// subscribe hook — no telemetry, no network, nothing leaves the machine.
+export { recordChainFallback, onChainFallback, chainHealth, resetChainHealth } from './chain-health';
+export type { ChainFallbackEvent, ChainHealthKind, ChainHealthListener, ChainHealthSnapshot } from './chain-health';
 
 // -- capability ops -----------------------------------------------------------
 

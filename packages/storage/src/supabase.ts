@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextRefRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { aggregateActivity } from '@ultracontext/core';
 import type { ActivityAggregateInput } from '@ultracontext/core';
+import { nodeColumnsSelectList } from './columns';
 
 // =============================================================================
 // SUPABASE ADAPTER — same interface via Supabase REST client
@@ -17,19 +18,23 @@ export class SupabaseAdapter implements StorageAdapter {
 
     // -- nodes: queries -------------------------------------------------------
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
         const { data, error } = await this.client
             .from('nodes')
-            .select('public_id, prev_id')
+            .select(nodeColumnsSelectList(columns))
             .eq('context_id', contextId);
         if (error) throw error;
-        return data ?? [];
+        // PostgREST's types degrade to GenericStringError for a select list it
+        // cannot see statically; the projection is built from NodeRow keys only.
+        return (data ?? []) as unknown as Partial<NodeRow>[];
     }
 
     async findContextBranches(contextId: string) {
         const { data, error } = await this.client
             .from('nodes')
-            .select('public_id, prev_id, created_at')
+            // ordinal rides along so findHead can break timestamp ties by real
+            // write order (ARCH-002)
+            .select('public_id, prev_id, created_at, ordinal')
             .eq('context_id', contextId)
             .eq('type', 'context');
         if (error) throw error;

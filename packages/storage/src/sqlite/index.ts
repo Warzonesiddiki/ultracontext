@@ -5,6 +5,7 @@ import { createClient } from '@libsql/client';
 import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextRefRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { searchableText } from '@ultracontext/core';
 import { schema, nodes, api_keys, projects, context_refs } from './schema';
+import { pickNodeColumns } from '../columns';
 import { migrateSqlite } from '../migrations/sqlite';
 
 // =============================================================================
@@ -107,16 +108,18 @@ export class SqliteAdapter implements StorageAdapter {
 
     // -- nodes: queries -------------------------------------------------------
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id })
+            .select(pickNodeColumns(nodes, columns))
             .from(nodes)
-            .where(eq(nodes.context_id, contextId));
+            .where(eq(nodes.context_id, contextId)) as Promise<Partial<NodeRow>[]>;
     }
 
     async findContextBranches(contextId: string) {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at })
+            // ordinal rides along so findHead can break timestamp ties by real
+            // write order (ARCH-002)
+            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at, ordinal: nodes.ordinal })
             .from(nodes)
             .where(and(eq(nodes.context_id, contextId), eq(nodes.type, 'context')));
     }

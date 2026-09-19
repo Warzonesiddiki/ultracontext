@@ -35,16 +35,20 @@ export class MemoryStorage implements StorageAdapter {
     private projectSeq = 0;
     private nodeSeq = 0;
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
+        // honour the projection exactly like the SQL adapters do: the default
+        // stays the two columns the chain walk needs, and a caller asking for
+        // `ordinal` (nextOrdinal, ARCH-002) gets it rather than undefined.
+        const wanted = columns?.length ? columns : (['public_id', 'prev_id'] as (keyof NodeRow)[]);
         return this.nodes
             .filter((n) => n.context_id === contextId)
-            .map((n) => ({ public_id: n.public_id, prev_id: n.prev_id }));
+            .map((n) => Object.fromEntries(wanted.map((column) => [column, n[column]])) as Partial<NodeRow>);
     }
 
     async findContextBranches(contextId: string) {
         return this.nodes
             .filter((n) => n.context_id === contextId && n.type === 'context')
-            .map((n) => ({ public_id: n.public_id, prev_id: n.prev_id, created_at: n.created_at }));
+            .map((n) => ({ public_id: n.public_id, prev_id: n.prev_id, created_at: n.created_at, ordinal: n.ordinal }));
     }
 
     async findVersions(contextId: string) {
@@ -94,6 +98,7 @@ export class MemoryStorage implements StorageAdapter {
                 parent_id: row.parent_id ?? null,
                 prev_id: row.prev_id ?? null,
                 context_id: row.context_id ?? null,
+                ordinal: row.ordinal ?? null,
             };
             this.nodes.push(node);
             results.push({

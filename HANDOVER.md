@@ -62,10 +62,30 @@ python3 -m venv /tmp/uc-v && /tmp/uc-v/bin/pip -q install -e 'apps/python-sdk[de
 ```
 
 Because `node_modules` disappears between bash calls, do the bootstrap and
-the test run **in the same call** — e.g. keep `/tmp/boot.sh` containing
-`corepack enable && pnpm install` (guarded on `node_modules` existing) and
-prefix commands with `bash /tmp/boot.sh`. A full install is ~5s warm, ~13s
-including a core test run.
+the test run **in the same call**. `/tmp` itself can also be wiped
+mid-session (it happened on 2026-09-19, taking `boot.sh` and the python venv
+with it while the working tree survived untouched), so treat both helpers as
+recreatable, not as state. `/tmp/boot.sh` — recreate verbatim if missing:
+
+```bash
+#!/usr/bin/env bash
+export PATH="/usr/local/bin:$PATH"
+corepack enable >/dev/null 2>&1
+cd /home/user/ultracontext
+if [ ! -d node_modules ] || [ ! -d packages/core/node_modules ]; then
+  pnpm install --prefer-offline >/tmp/boot-install.log 2>&1 || pnpm install >>/tmp/boot-install.log 2>&1
+fi
+```
+
+Prefix node work with `bash /tmp/boot.sh`; a warm install is ~5s. The python
+venv is `python3 -m venv /tmp/uc-v && /tmp/uc-v/bin/pip install -e
+'apps/python-sdk[dev]'` (~20s).
+
+**If the sandbox recycled, the local branch pointer may have been rewound to
+its base while the working tree kept every edit** — `git log` shows the base
+commit and `git status` shows both the last item's files and the current
+one's. Recover with `git fetch origin <branch> && git reset --mixed
+FETCH_HEAD` (never `--hard`), then re-run this section before committing.
 
 **Never** `git clean` before confirming what is untracked — the pending
 `.github/workflows/ci.yml` (CI-001) is precious and untracked by design.
@@ -77,7 +97,8 @@ Then restore the baseline (§5) before touching any feature.
 - `origin/main` = **`abe1284`** — "Merge pull request #3" (merged
   2026-09-18): 12 items — API-003/004/005/007/008/009/010/011,
   TEST-002/003, SDK-001 (python), SDK-002 (js).
-- **Board: 65 items, 40 shipped, 25 open** (ARCH-001 shipped 2026-09-18).
+- **Board: 65 items, 41 shipped, 24 open** (ARCH-001 and ARCH-002 both
+  shipped 2026-09-18 on this session's branch, not yet merged to main).
 - Session branches: `arena/01a08f10-…` (PR #1), `arena/01a09075-…` (PR #2),
   `arena/01a0a803-…` (PR #3, at `939042c`) are all merged/historical.
   **Work happens on the CURRENT session's `arena/…` branch only** — the
@@ -101,34 +122,29 @@ Then restore the baseline (§5) before touching any feature.
 
 API-003, API-004, API-005, API-007, API-008, API-009, API-010, API-011,
 TEST-002, TEST-003, SDK-001, SDK-002 — all on `main` via PR #3 (`abe1284`).
-**ARCH-001** (named branches + immutable version ids) shipped 2026-09-18;
-see its board entry for the full contract.
+Shipped 2026-09-18 on this session's branch (one commit each, not yet
+merged): **ARCH-001** (named branches + immutable version ids) and
+**ARCH-002** (persisted chain ordinal + chain-health counters on
+`GET /health`). Both board entries carry the full contract — read them
+before touching chain ordering, version addressing or branches.
 
 ### Next, in board order
 
-**1. ARCH-002 (M) — Harden chain ordering.**
-`packages/core/src/context-chain.ts (orderNodes)`: a broken `prev_id` chain
-falls back to a `created_at` sort and only `console.error`s. ISO-ms stamps
-tie, so message order is nondeterministic on the fallback path. Acceptance:
-a metric/alert fires on fallback, and an explicit ordinal is persisted
-alongside `prev_id` (a migration — follow the 0003 pattern, and keep
-`apps/postgres/init.sql` in lockstep).
-
-**2. ARCH-003 (L) — Split the sync god-modules.**
+**1. ARCH-003 (L) — Split the sync god-modules.**
 `apps/sync/src/tui.mjs` (1,835 lines) and `daemon.mjs` (1,242 lines).
 Acceptance: `logger.mjs`, `ipc.mjs`, `sources.mjs`, `ingest.mjs`,
 `stats.mjs` extracted; the TUI broken into the `ui/` tree that already
 exists. NOTE `pnpm check` for apps/sync is a list of `node --check` calls
 in package.json — add every new file to it.
 
-**3. PERF-001 (M) — Event-driven ingestion** in `daemon.mjs`: fs.watch /
+**2. PERF-001 (M) — Event-driven ingestion** in `daemon.mjs`: fs.watch /
 inotify with a polling fallback, adaptive idle backoff, mtime
 pre-filtering.
 
-**4. OPS-001 (M) — Docker image for the API**: Dockerfile, build/start
+**3. OPS-001 (M) — Docker image for the API**: Dockerfile, build/start
 scripts, compose; document in `apps/docs/guides/self-hosting.mdx`.
 
-**5. DOC-001/002/003** — AGENTS.md drift fix (+ a CI path check); personal
+**4. DOC-001/002/003** — AGENTS.md drift fix (+ a CI path check); personal
 agent config out of the repo (CLAUDE.md); changelog backfill.
 **Known drift found while doing ARCH-001:** the docs claim "appends don't
 create versions" (`guides/store-retrieve-contexts.mdx`,
@@ -138,7 +154,7 @@ appends DO create version heads (`operation:'append'`; verified create +
 Also `apps/api/src/schemas/openapi.ts` documents `Version.operation` as
 `enum: ['create','update','delete']` while core also emits `'append'`.
 
-**6. TEAM-001** — cross-user sharing design decision (a share model vs a
+**5. TEAM-001** — cross-user sharing design decision (a share model vs a
 documented single-project boundary). Then **PROM-004/006/007/008**, then
 the P3 MISC items.
 
@@ -146,13 +162,13 @@ Re-read each item's `d:`/`acc:` in `taskboard.html` before starting: board
 entries CAN be stale vs the tree (they were wrong for TEST-002 and
 TEST-003), so verify the code first.
 
-## 5. VERIFICATION BASELINE (all green as of 2026-09-18, post-ARCH-001)
+## 5. VERIFICATION BASELINE (all green as of 2026-09-18, post-ARCH-002)
 
 | package | command | result |
 |---|---|---|
-| core | `cd packages/core && node --import tsx --test src/*.test.ts src/**/*.test.ts` | **289/289** |
-| storage | `cd packages/storage && pnpm test` | **45/45** |
-| api | `cd apps/api && node --import tsx --test src/tests/**/*.test.ts` | **195/195** |
+| core | `cd packages/core && node --import tsx --test src/*.test.ts src/**/*.test.ts` | **323/323** |
+| storage | `cd packages/storage && pnpm test` | **51/51** |
+| api | `cd apps/api && node --import tsx --test src/tests/**/*.test.ts` | **198/198** |
 | parsers | `cd packages/parsers && pnpm test` | **98/98** |
 | sync | `cd apps/sync && pnpm test` | **20/20** |
 | mcp-server | `cd apps/mcp-server && pnpm test` | **5/5** |
@@ -181,14 +197,18 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
 ## 6. REPO MAP
 
 - `packages/core` — domain ops (context chain, version model, request
-  parsing), `StorageAdapter` interface, `MemoryStorage` test double,
+  parsing), `StorageAdapter` interface, `MemoryStorage` + `seedContext` test
+  doubles (`src/testing/`), `chain-health.ts` (the fallback observable),
   `resultStatus()` (ErrorCode→HTTP). TS; `node --import tsx --test`.
 - `packages/storage` — drizzle schema; **SQLite adapter (libsql)** +
-  **Supabase adapter**; migration tooling in `src/migrations/`
-  (`0001_init`, `0002_sqlite_constraints`; runner = one BEGIN…COMMIT
-  `executeMultiple` per migration + `schema_migrations` stamp; registry
-  requires up+down for BOTH dialects; migrations are IMMUTABLE — add new,
-  never edit; legacy DBs no-op via IF NOT EXISTS).
+  **Supabase adapter**; `src/columns.ts` (the shared column-projection
+  helper); migration tooling in `src/migrations/` (`0001_init`,
+  `0002_sqlite_constraints`, `0003_context_refs`, `0004_node_ordinal`;
+  runner = one BEGIN…COMMIT `executeMultiple` per migration +
+  `schema_migrations` stamp; registry requires up+down for BOTH dialects;
+  migrations are IMMUTABLE — add new, never edit; legacy DBs no-op via IF
+  NOT EXISTS, and `sqlite/schema.ts`'s `SCHEMA_SQL` must stay equal to the
+  cumulative result because a test bootstraps from it and then migrates).
 - `packages/parsers` — transcript parsers: claude, codex, opencode (v1
   legacy JSONL + v2 + SQLite), agy (Antigravity), freebuff, generic.
   Fixtures under `tests/fixtures/` (opencode-v1.db / opencode-v2.db are
@@ -247,11 +267,39 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
   removes the pointer only — never version data. Name rules live in core
   `isValidBranchName` and are mirrored byte-for-byte by the zod
   `BranchName` in `apps/api/src/schemas/index.ts`.
-- **findHead's tiebreak is total:** created_at desc, then public_id desc.
-  ISO-ms stamps collide routinely (one batch writes several heads in the
-  same millisecond), and a created_at-only sort left the winner dependent
-  on storage return order. A node that is another head's `prev_id` target
-  is NOT a head — sorting can never resurrect an interior node.
+- **findHead's tiebreak is total:** `ordinal` desc, then created_at desc,
+  then public_id desc. ISO-ms stamps collide routinely (one batch writes
+  several heads in the same millisecond), and a created_at-only sort left
+  the winner dependent on storage return order; the ordinal IS the write
+  order, so the two timestamp keys only matter for heads written before
+  migration 0004. A node that is another head's `prev_id` target is NOT a
+  head — sorting can never resurrect an interior node.
+- **Chain ordering (ARCH-002):** `prev_id` stays authoritative —
+  `orderNodes` walks it and returns that order untouched when the walk is
+  complete, EVEN IF the persisted ordinals disagree with it. Only a broken
+  walk falls back, and the fallback is now total: `ordinal`, then
+  `created_at`, then `public_id`. A null ordinal sorts AFTER every real one
+  (null means "written before 0004", never 0).
+- **`nodes.ordinal`:** 0-based position inside the node's `context_id`
+  partition, written by the same insert that writes `prev_id`. Partitions:
+  version heads share the ROOT id (grows for the life of the context);
+  messages carry their own HEAD id and every version write mints a fresh
+  head, so each message partition restarts at 0; a root node has
+  `context_id` NULL → no partition → no ordinal. `nextOrdinal()` =
+  MAX+1, **never COUNT** — deleting an interior head drops the count, so a
+  count-based ordinal would collide with a surviving head.
+- **Chain health is observable, not telemetry:** `chain-health.ts` keeps
+  in-process counters + `onChainFallback(listener)` (listener exceptions
+  contained) and writes one `[ultracontext:chain-health]` log line with the
+  event as JSON. `GET /health` returns them as `chain_health` — `status`
+  stays `ok` on purpose (a damaged chain is data; a failing liveness probe
+  would restart a healthy server and fix nothing → alert on
+  `chain_health.fallbacks`), and `last_context_id` is OMITTED because that
+  probe is unauthenticated and must not name a tenant's context. Counters
+  reset with the process; nothing is ever transmitted.
+- **`findNodesByContextId(contextId, columns?)` projections are honoured**
+  by all four adapters via `packages/storage/src/columns.ts` (default stays
+  `public_id, prev_id`). They used to be silently ignored — see pitfall 21.
 - **MessageView** = `content` + `id` + `index` + `created_at` (ISO) +
   `metadata` — `created_at` is in ALL five response builders (get-context
   default + at-slice, append, update, delete). `?before=` is
@@ -344,12 +392,14 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
     `/tmp/boot.sh` that runs `corepack enable && pnpm install` when
     `node_modules` is missing (~13s) and prefix test commands with it.
     The `/tmp/uc-v` venv persists across calls within a session.
-18. **Adding a migration breaks hardcoded test fixtures.** Adding version 3
-    collided with `migrations.test.ts`'s synthetic `TEST_0003` (a fake
-    "next" migration) and with `rollbackPostgres`'s `{version: 3, name:
-    'ghost'}` unknown-version case — both had to move to 4 / 9. Registry
-    versions are immutable: never reuse one, so fixtures must be renumbered
-    forwards, not the migration backwards.
+18. **Adding a migration breaks hardcoded test fixtures.** Version 3
+    collided with `migrations.test.ts`'s synthetic `TEST_0003` and with
+    `rollbackPostgres`'s `{version: 3, name: 'ghost'}` case (moved to 4 / 9);
+    version 4 then collided with that same fixture again, now `TEST_0005`
+    (ghost stays at 9). Every `[1, 2, 3]` assertion, `report.version`,
+    `ups.length` and the "already-current" PgState list has to move too.
+    Registry versions are immutable: never reuse one, so fixtures are
+    renumbered forwards, not the migration backwards.
 19. **`apps/docs/docs.json` is 4-space-indented JSON with some arrays kept
     on one line.** Round-tripping it through `json.dumps` reformats all 120
     lines; do a targeted text insertion instead (3-line diff vs 116).
@@ -358,6 +408,33 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
     files (`validation`, `zod-validation`, `openapi.test.ts`) that all
     asserted the old code. When a change is deliberate, rewrite the
     assertion to state the NEW contract and why — don't delete it.
+21. **An ignored optional parameter reads as `undefined`, which looks like
+    missing data.** `findNodesByContextId(ctx, columns)` accepted a
+    projection every adapter threw away. Harmless for the chain walk; fatal
+    for `nextOrdinal`, because `MAX(undefined)` is indistinguishable from
+    "empty partition" and every append would have restarted the numbering at
+    0 — silently, with all tests green. When you add a caller that depends on
+    an optional parameter, check the adapters actually implement it.
+22. **SQLite has no `ADD COLUMN IF NOT EXISTS`,** and a migration must run
+    cleanly on BOTH a migrated database and one bootstrapped from
+    `SCHEMA_SQL` (which already has the column) — `migrations.test.ts` does
+    exactly that. So 0004 rebuilds the table (the 0002 procedure) and its
+    copy column list deliberately OMITS the new column, recomputing it
+    afterwards. Also: a backfill `UPDATE` must not read the column it is
+    writing — Postgres and SQLite differ on seeing their own uncommitted
+    writes, so rank by immutable columns only (`created_at`, `id`).
+23. **`createContext` takes no messages.** `CreateContextInput` is
+    `{from?, version?, at?, before?, metadata?}` — POST /contexts creates an
+    EMPTY context and POST /contexts/:id fills it, so the create head always
+    has `child_count: 0`. Tests that want a seeded context use
+    `testing/seed.ts`'s `seedContext()` (a fixture, not the op) or create +
+    append. Passing `{messages: […]}` to the op is silently ignored.
+24. **`apps/docs/guides/self-hosting.mdx` carries a hand-written DDL
+    sketch** that had drifted (no `context_refs`, no UNIQUE/FK, no
+    `ordinal`). A self-hoster who follows it gets an API that selects
+    columns which do not exist. It is updated as of ARCH-002 and now points
+    at `apps/postgres/init.sql` as canonical — keep it that way, or delete
+    the sketch when DOC-001 lands.
 
 ## 9. CONVENTIONS
 
@@ -402,9 +479,8 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
 
 1. Run the §2 recovery runbook; confirm the §5 baseline is green
    (remember pitfall 17: bootstrap inside the same bash call).
-2. Work **ARCH-002** → **ARCH-003** → **PERF-001** → **OPS-001** →
-   **DOC-001/002/003** → **TEAM-001**, then PROM-004/006/007/008 and the P3
-   MISC items. Per item: re-verify the code against the board entry,
+2. Work **ARCH-003** → **PERF-001** → **OPS-001** → **DOC-001/002/003** →
+   **TEAM-001**, then PROM-004/006/007/008 and the P3 MISC items. Per item: re-verify the code against the board entry,
    implement, ALL suites green + tsc/mypy clean, mark the board, commit
    `<ITEM-ID>: <title>`, push to the CURRENT session's `arena/…` branch.
 3. Sweep the docs drift recorded in §4 item 5 (the "appends don't create

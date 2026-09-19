@@ -14,6 +14,7 @@ const CONTEXT_REF_COLUMNS = {
 };
 
 import { nodes, api_keys, projects, context_refs, type ApiDb } from './db';
+import { pickNodeColumns } from './columns';
 
 // =============================================================================
 // DRIZZLE ADAPTER — wraps existing Drizzle/PostgreSQL queries
@@ -24,16 +25,18 @@ export class DrizzleAdapter implements StorageAdapter {
 
     // -- nodes: queries -------------------------------------------------------
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id })
+            .select(pickNodeColumns(nodes, columns))
             .from(nodes)
-            .where(eq(nodes.context_id, contextId));
+            .where(eq(nodes.context_id, contextId)) as Promise<Partial<NodeRow>[]>;
     }
 
     async findContextBranches(contextId: string) {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at })
+            // ordinal rides along so findHead can break timestamp ties by real
+            // write order (ARCH-002)
+            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at, ordinal: nodes.ordinal })
             .from(nodes)
             .where(and(eq(nodes.context_id, contextId), eq(nodes.type, 'context')));
     }

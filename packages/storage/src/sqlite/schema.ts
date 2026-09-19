@@ -35,6 +35,10 @@ export const nodes = sqliteTable('nodes', {
     parent_id: text('parent_id'),
     prev_id: text('prev_id'),
     context_id: text('context_id'),
+    // explicit position within the context_id partition (ARCH-002, migration
+    // 0004). Nullable: root contexts belong to no partition, and rows written
+    // before 0004 have none until it is backfilled.
+    ordinal: integer('ordinal'),
 });
 
 export const context_refs = sqliteTable('context_refs', {
@@ -51,12 +55,13 @@ export const context_refs = sqliteTable('context_refs', {
 export const schema = { projects, api_keys, nodes, context_refs };
 
 // DDL applied on first open — superseded by the migration tooling
-// (../migrations/0001_init.ts + 0002 + 0003 are the canonical baseline). Kept
-// as an export for compatibility; new code should go through migrateSqlite().
-// Matches the post-0003 database: UNIQUE constraints, FK ON DELETE CASCADE
-// (callers must run PRAGMA foreign_keys = ON for the cascade to apply), and the
-// context_refs named-branch table with the same index names the migration uses
-// so a bootstrapped database and a migrated one are indistinguishable.
+// (../migrations/0001_init.ts + 0002 + 0003 + 0004 are the canonical
+// baseline). Kept as an export for compatibility; new code should go through
+// migrateSqlite(). Matches the post-0004 database: UNIQUE constraints, FK ON
+// DELETE CASCADE (callers must run PRAGMA foreign_keys = ON for the cascade to
+// apply), the context_refs named-branch table, and nodes.ordinal with the same
+// index names the migrations use so a bootstrapped database and a migrated one
+// are indistinguishable.
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,10 +88,15 @@ CREATE TABLE IF NOT EXISTS nodes (
     created_at TEXT NOT NULL,
     parent_id TEXT,
     prev_id TEXT,
-    context_id TEXT
+    context_id TEXT,
+    -- explicit position within the context_id partition (ARCH-002, migration
+    -- 0004): makes the broken-chain fallback order total instead of leaving it
+    -- to ISO-millisecond timestamps that tie.
+    ordinal INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_context_id ON nodes(context_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_project_type ON nodes(project_id, type);
+CREATE INDEX IF NOT EXISTS idx_nodes_context_ordinal ON nodes(context_id, ordinal);
 CREATE INDEX IF NOT EXISTS idx_api_keys_project_id ON api_keys(project_id);
 
 -- Named branches (ARCH-001, migration 0003): a project-scoped name pinned to

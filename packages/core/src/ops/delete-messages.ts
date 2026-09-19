@@ -3,7 +3,7 @@
 // (ported from the DELETE /contexts/:id message-delete path)
 // =============================================================================
 
-import { findHead, getOrderedNodes, getVersions } from '../context-chain';
+import { findHead, getOrderedNodes, getVersions, nextOrdinal } from '../context-chain';
 import { generatePublicId } from '../public-ids';
 import { isPlainObject } from '../request-parsing';
 import type { MessageView } from '../message-view';
@@ -77,13 +77,15 @@ export async function deleteMessages(
     // build filtered node copies (copy-on-write of the survivors)
     const newHeadId = generatePublicId('context');
     const filtered = orderedNodes.filter((n) => !deleteSet.has(n.public_id));
-    const newNodes = filtered.map((n) => ({
+    const newNodes = filtered.map((n, i) => ({
         public_id: generatePublicId('msg'),
         project_id: projectId,
         type: 'message' as const,
         context_id: newHeadId,
         parent_id: n.public_id,
         prev_id: null as string | null,
+        // snapshot copy: a fresh partition, numbered in write order (ARCH-002)
+        ordinal: i,
         content: n.content,
         metadata: n.metadata,
     }));
@@ -103,6 +105,7 @@ export async function deleteMessages(
         type: 'context' as const,
         context_id: root.public_id,
         prev_id: currentHead.public_id,
+        ordinal: await nextOrdinal(storage, root.public_id),
         content: {},
         metadata: { operation: 'delete', affected: idsToDelete, child_count: newNodes.length, ...(userMetadata ?? {}) },
     };

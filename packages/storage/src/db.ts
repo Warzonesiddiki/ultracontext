@@ -35,6 +35,9 @@ export const nodes = pgTable('nodes', {
     parent_id: text('parent_id'),
     prev_id: text('prev_id'),
     context_id: text('context_id'),
+    // explicit position within the context_id partition (ARCH-002, migration
+    // 0004). Nullable: root contexts belong to no partition.
+    ordinal: bigint('ordinal', { mode: 'number' }),
 });
 
 // Named branches (ARCH-001, migration 0003): a project-scoped name pinned to an

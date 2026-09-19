@@ -107,14 +107,38 @@ Then restore the baseline (§5) before touching any feature.
   BEFORE asking for a merge, and re-verify with
   `git ls-remote origin main "refs/heads/<session-branch>"` at the start of
   every turn — the sandbox rewinds the local branch pointer to its base.
-- Untracked-by-design: `.github/workflows/ci.yml` (byte-identical to the
-  tracked `docs/ci/ci.yml.pending`; restore with
-  `cp docs/ci/ci.yml.pending .github/workflows/ci.yml`).
-- **CI-001 is still blocked on the OWNER:** the connected GitHub App has
-  `workflows` at App level but the grant is installation-scoped — set it on
-  the repo's Installed-apps → Configure → Permissions → Workflows
-  (read+write). Standing rule: never commit `ci.yml` until the push that
-  contains it is accepted; if a push is rejected, revert the commit.
+- **CI-001 is STILL BLOCKED — promotion was attempted and rejected on
+  2026-09-19.** The owner approved CI-001, so the workflow was committed
+  (`git mv docs/ci/ci.yml.pending → .github/workflows/ci.yml`) and pushed.
+  GitHub refused the push:
+
+  ```
+  ! [remote rejected] (refusing to allow a GitHub App to create or update
+    workflow `.github/workflows/ci.yml` without `workflows` permission)
+  ```
+
+  So the grant that landed is NOT the installation-scoped one this needs.
+  The commit was rolled back (`git reset --mixed HEAD~1` + restore) per the
+  standing rule; the remote tip never moved. What to check, in order:
+  1. Repo → Settings → **Installed GitHub Apps** → *your App* → Configure →
+     **Repository permissions → Workflows = Read and write**. The App-level
+     permission (App settings → Permissions & events) is necessary but NOT
+     sufficient: an installation can narrow it, and this one has.
+  2. If Apps → *GitHub Apps* → your App → **Installations** shows the
+     repo under "Only select repositories", the Workflows permission must be
+     enabled for THAT installation, then re-saved.
+  3. Permission changes can take a minute to propagate; also confirm the
+     push is authenticated as the App (`gh auth status`) and not as a user
+     token that lacks the scope.
+
+  Current layout: `docs/ci/ci.yml.pending` is the TRACKED canonical copy and
+  `.github/workflows/ci.yml` sits beside it UNTRACKED, byte-identical
+  (`diff -q` verified). Retry = commit the rename and push; nothing else
+  needs redoing. The workflow itself is finished and every step was
+  verified locally in CI order on 2026-09-19 (see the board entry).
+  Remaining OWNER step after it lands: branch protection on `main` with the
+  two job names as required checks — `JS — check, test, build, bins` and
+  `Python — pytest + mypy`.
 
 ## 4. REMAINING WORK — EXACT ORDER
 
@@ -172,15 +196,20 @@ TEST-003), so verify the code first.
 | parsers | `cd packages/parsers && pnpm test` | **98/98** |
 | sync | `cd apps/sync && pnpm test` | **20/20** |
 | mcp-server | `cd apps/mcp-server && pnpm test` | **5/5** |
-| js-sdk | `cd apps/js-sdk && pnpm test` | **103/104** — 1 KNOWN env-only failure |
+| js-sdk | `cd apps/js-sdk && pnpm test` | **103/103** — e2e pty suite skips here |
 | python-sdk | `cd apps/python-sdk && /tmp/uc-v/bin/python -m pytest -q` | **73/73** |
 | tsc | `pnpm -r --if-present run check` | clean (core, storage, api, js-sdk, sync) |
 | mypy | `/tmp/uc-v/bin/python -m mypy apps/python-sdk/ultracontext` | clean |
 
-The one js-sdk failure is `tests/onboarding-wizard.e2e.test.mjs`: it needs a
-native `node-pty` build this sandbox cannot compile (nodejs.org headers are
-unreachable → "Failed to load native module: pty.node"). **Do not try to
-fix it** — it is not a code defect.
+`tests/onboarding-wizard.e2e.test.mjs` needs the NATIVE `node-pty` binding,
+which this sandbox cannot build (nodejs.org headers unreachable → "Failed to
+load native module: pty.node"). It used to fail the file at import time and
+was carried as a known env-only failure; as of CI-001 it loads node-pty
+defensively and the suite SKIPS with the reason, so `pnpm test` exits 0 here
+and runs all 13 e2e tests wherever the binding builds (CI on ubuntu-latest,
+a normal dev machine). Do not "fix" the skip into a pass, and do not remove
+the guard: a static import of a native module in a test file turns an
+environment property into a red suite.
 
 Bootstrap (a fresh sandbox has no `node_modules` and no `pnpm` on PATH):
 
@@ -224,8 +253,16 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
 - `apps/js-sdk` — TS client + CLI (bin), tsdown build → gitignored `dist/`.
 - `apps/mcp-server` — MCP stdio+http, tsdown bundle `dist/stdio.mjs` (bin).
 - `apps/python-sdk` — httpx client, pytest, mypy strict (dev extras).
-- `apps/docs` — docs site. `docs/ci/ci.yml.pending` = the ready-to-promote
-  CI workflow.
+- `apps/docs` — docs site (Mintlify: `docs.json` nav + `.mdx` pages,
+  `api-reference/openapi.json` GENERATED from the API's openapi.ts).
+- `docs/ci/ci.yml.pending` — the TRACKED, ready-to-promote PR CI workflow
+  (JS job: install → check → js-sdk tsc → 7 test suites → builds →
+  verify-bins; Python job: pytest + mypy). `.github/workflows/ci.yml` is the
+  same bytes, untracked, until the App's installation-scoped `workflows`
+  permission exists (§3). `scripts/ci/verify-bins.mjs` asserts every declared
+  bin path exists. `.github/workflows/publish.yml` (tracked, pre-existing)
+  publishes on release — proof that a workflow file CAN be committed once the
+  permission is right.
 - `taskboard.html` — THE board. Data array of JS objects; fields
   `id/sev/ph/eff/area/t/file/d/acc`.
 - `scripts/ci/verify-bins.mjs` — asserts every declared bin path exists.
@@ -446,9 +483,13 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
   Push ONLY to the session's `arena/…` branch.
 - **PRs:** opened per batch to `main` (PR #2 merged as `184633b`, PR #3 as
   `abe1284`). One commit per board item, subject `<ITEM-ID>: <title>`.
-- **ci.yml:** never commit `.github/workflows/ci.yml` until the App has
-  `workflows` permission; the canonical pending copy is
-  `docs/ci/ci.yml.pending`.
+- **CI:** the canonical workflow is `docs/ci/ci.yml.pending` (tracked) with
+  an untracked byte-identical `.github/workflows/ci.yml`; **never `git add`
+  the latter until the push containing it is accepted** (§3 records the
+  2026-09-19 rejection). Edit BOTH or, better, edit the pending copy and
+  `cp` it across so they cannot drift. CI runs each package's test SCRIPT,
+  not the suites directly — renaming or narrowing a package script, or adding
+  a package, must be mirrored in the workflow or coverage is silently lost.
 
 ## 10. VERIFIED EXTERNAL FACTS (original clones are gone; recorded here)
 
@@ -486,7 +527,12 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
 3. Sweep the docs drift recorded in §4 item 5 (the "appends don't create
    versions" claim and the `Version.operation` enum missing `'append'`)
    when DOC-001 comes up — both verified false on 2026-09-18.
-4. Ask the user whether the GitHub App `workflows` permission was granted;
-   if yes, promote CI-001 (§3) and verify a green run.
+4. CI-001 promotion was REJECTED on 2026-09-19 (§3 has the error text and
+   the three settings to check). When the owner confirms the
+   installation-scoped Workflows permission is set: `git mv
+   docs/ci/ci.yml.pending .github/workflows/ci.yml`, commit `CI-001: add
+   pull-request CI`, push, and watch the first PR's checks with
+   `gh run list` / `gh pr checks`. Do not re-derive the workflow — it is
+   finished and every step was verified locally in CI order.
 5. Push BEFORE any PR merge — a session loses GitHub access when its own PR
    merges (§3).

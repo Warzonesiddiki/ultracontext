@@ -97,8 +97,28 @@ Then restore the baseline (§5) before touching any feature.
 - `origin/main` = **`abe1284`** — "Merge pull request #3" (merged
   2026-09-18): 12 items — API-003/004/005/007/008/009/010/011,
   TEST-002/003, SDK-001 (python), SDK-002 (js).
-- **Board: 65 items, 41 shipped, 24 open** (ARCH-001 and ARCH-002 both
-  shipped 2026-09-18 on this session's branch, not yet merged to main).
+- **Board: 66 items, 44 shipped, 22 open** as of 2026-09-20 (ARCH-001 and
+  ARCH-002 shipped 2026-09-18; CI-001 partially shipped 2026-09-19;
+  ARCH-003's daemon half shipped 2026-09-20 and its TUI half was carved out
+  as the NEW item **ARCH-005** — `ARCH-004` was already taken by delta
+  storage, so do not reuse it). None of them are merged to main yet.
+- **ARCH-003 (2026-09-20) — the sync daemon split.** `daemon.mjs` went
+  1,309 → 387 lines; six factory modules now live beside it:
+  `logger.mjs` (level filter, recentLogs ring, verbose/one-line rendering,
+  stdio guards), `stats.mjs` (counters, uptime, STATUS line), `config.mjs`
+  (env/argv → cfg, the prefs block, bootstrap vocabulary, validateConfig),
+  `ipc.mjs` (status.json / config.json / `_bootstrapState`, injectable
+  paths), `sources.mjs` (nine harnesses, globs, project-path LRU),
+  `ingest.mjs` (offsets, dedupe, context resolution, bulk append,
+  processFile/processSource). Wiring is a star: `daemonBoot` builds cfg →
+  state → runtime → stats → logger → ipc → configPrefs → sources → ingest,
+  and each module receives what it needs (no module imports another).
+  The daemon previously had ZERO test coverage; it now has 143 tests
+  (`tests/daemon-*.test.mjs`, sync 20 → 163). Behaviour was verified
+  unchanged by diffing every moved function against
+  `git show HEAD~:apps/sync/src/daemon.mjs`; four pre-existing quirks were
+  deliberately preserved and are pinned by tests marked "pinned, not
+  blessed" (see the ARCH-003 board entry for the list).
 - Session branches: `arena/01a08f10-…` (PR #1), `arena/01a09075-…` (PR #2),
   `arena/01a0a803-…` (PR #3, at `939042c`) are all merged/historical.
   **Work happens on the CURRENT session's `arena/…` branch only** — the
@@ -154,12 +174,22 @@ before touching chain ordering, version addressing or branches.
 
 ### Next, in board order
 
-**1. ARCH-003 (L) — Split the sync god-modules.**
-`apps/sync/src/tui.mjs` (1,835 lines) and `daemon.mjs` (1,242 lines).
-Acceptance: `logger.mjs`, `ipc.mjs`, `sources.mjs`, `ingest.mjs`,
-`stats.mjs` extracted; the TUI broken into the `ui/` tree that already
-exists. NOTE `pnpm check` for apps/sync is a list of `node --check` calls
-in package.json — add every new file to it.
+**1. ARCH-005 (L) — Split `tui.mjs` into the `ui/` tree.** The deferred
+second half of ARCH-003 (which shipped the daemon half on 2026-09-20).
+`apps/sync/src/tui.mjs` is still 1,835 lines: rendering already lives in
+`src/ui/` (30 modules behind the `ui.mjs` barrel), but the boot/cfg/state,
+status.json polling, the ~700-line resume + terminal-launch cluster, the
+context load/filter/sort/title logic, the update check and `writeConfigKey`
+do not. It also DUPLICATES code that now exists elsewhere:
+`readProcessInfo`/`isWatchCommand`/`stopWatchParentProcess` are verbatim
+copies from `daemon.mjs` (move to one shared module), and
+`normalizeApiKey`/`resolveRuntimeConfigPath`/`DEFAULT_RUNTIME_CONFIG_FILE`/
+`normalizeBootstrapModeWithPrompt`/`formatTime`/`errorDetails`/
+`runtimeLogsKeep` are re-declarations of `config.mjs`/`logger.mjs` exports.
+There is NO test coverage for any of it. NOTE the old "add every new file
+to the `node --check` list in package.json" pitfall is GONE: apps/sync's
+`check` is now `node scripts/check-syntax.mjs`, which derives its list from
+`src/` (56 modules today) — new files are covered automatically.
 
 **2. PERF-001 (M) — Event-driven ingestion** in `daemon.mjs`: fs.watch /
 inotify with a polling fallback, adaptive idle backoff, mtime
@@ -186,7 +216,7 @@ Re-read each item's `d:`/`acc:` in `taskboard.html` before starting: board
 entries CAN be stale vs the tree (they were wrong for TEST-002 and
 TEST-003), so verify the code first.
 
-## 5. VERIFICATION BASELINE (all green as of 2026-09-18, post-ARCH-002)
+## 5. VERIFICATION BASELINE (all green as of 2026-09-20, post-ARCH-003)
 
 | package | command | result |
 |---|---|---|
@@ -194,7 +224,7 @@ TEST-003), so verify the code first.
 | storage | `cd packages/storage && pnpm test` | **51/51** |
 | api | `cd apps/api && node --import tsx --test src/tests/**/*.test.ts` | **198/198** |
 | parsers | `cd packages/parsers && pnpm test` | **98/98** |
-| sync | `cd apps/sync && pnpm test` | **20/20** |
+| sync | `cd apps/sync && pnpm test` | **163/163** (20 pre-existing + 143 new daemon-module tests) |
 | mcp-server | `cd apps/mcp-server && pnpm test` | **5/5** |
 | js-sdk | `cd apps/js-sdk && pnpm test` | **103/103** — e2e pty suite skips here |
 | python-sdk | `cd apps/python-sdk && /tmp/uc-v/bin/python -m pytest -q` | **73/73** |
@@ -250,6 +280,19 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
   serve|switch|backup|gc`), `redact.mjs`, `utils.mjs`. Plain ESM JS;
   `node --check` + `node --test`. BULK_BATCH_SIZE = 50 (body cap must stay
   above ~50 messages).
+  - **Daemon modules (ARCH-003, 2026-09-20):** `daemon.mjs` is
+    orchestration only; the work lives in `logger.mjs`, `stats.mjs`,
+    `config.mjs`, `ipc.mjs`, `sources.mjs`, `ingest.mjs` — all factories
+    taking their dependencies (`cfg`, `state`, `runtime`, `log`, the stat
+    bumpers, `sourceFiles`). To add a metric, just call `bumpStat("name")`;
+    to add a harness, edit `buildSources` in `sources.mjs`.
+  - `scripts/check-syntax.mjs` — the `check` script: walks `src/` and runs
+    `node --check` on every `.mjs` (56 today). `scripts/smoke-stub-api.mjs`
+    — a stub UltraContext API (GET /contexts?limit=1, POST /contexts,
+    POST /contexts/:id) that logs every request to
+    `/tmp/uc-smoke/requests.jsonl`, for smoke-running the real daemon
+    without a server. Smoke recipe + observed numbers: board ARCH-003 `d:`.
+  - **`tui.mjs` (1,835 lines) is the remaining god-module → ARCH-005.**
 - `apps/js-sdk` — TS client + CLI (bin), tsdown build → gitignored `dist/`.
 - `apps/mcp-server` — MCP stdio+http, tsdown bundle `dist/stdio.mjs` (bin).
 - `apps/python-sdk` — httpx client, pytest, mypy strict (dev extras).
@@ -520,7 +563,8 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
 
 1. Run the §2 recovery runbook; confirm the §5 baseline is green
    (remember pitfall 17: bootstrap inside the same bash call).
-2. Work **ARCH-003** → **PERF-001** → **OPS-001** → **DOC-001/002/003** →
+2. Work **ARCH-005** (the `tui.mjs` split — the half of ARCH-003 that was
+   deferred) → **PERF-001** → **OPS-001** → **DOC-001/002/003** →
    **TEAM-001**, then PROM-004/006/007/008 and the P3 MISC items. Per item: re-verify the code against the board entry,
    implement, ALL suites green + tsc/mypy clean, mark the board, commit
    `<ITEM-ID>: <title>`, push to the CURRENT session's `arena/…` branch.

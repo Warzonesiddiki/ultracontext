@@ -254,31 +254,48 @@ describe('createContext', () => {
         }
     });
 
-    it('returns not_found for a negative version index', async () => {
+    it('forks from a negative version index counted back from the head (ARCH-001)', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
-        const seed = await seedContext(storage, project!.id, { messages: [{ text: 'm' }] });
+        const seed = await seedContext(storage, project!.id, { messages: [{ text: 'v0-msg' }] });
+        await addVersion(storage, project!.id, seed.rootId, [{ text: 'v1-msg' }]);
 
+        // -1 = the latest version (git / Python style)
         const result = await createContext(storage, project!.id, { from: seed.rootId, version: -1 });
+        assert.equal(result.ok, true);
+        if (!result.ok) return;
 
-        assert.equal(result.ok, false);
-        if (!result.ok) {
-            assert.equal(result.code, 'not_found');
-            assert.equal(result.message, 'Version not found');
+        const head = await findHead(storage, result.data.id);
+        const copied = await getOrderedNodes(storage, result.data.id, head!.public_id);
+        assert.deepEqual(copied.map((n) => n.content), [{ text: 'v1-msg' }]);
+
+        // …but not past the start of the chain
+        const tooFar = await createContext(storage, project!.id, { from: seed.rootId, version: -99 });
+        assert.equal(tooFar.ok, false);
+        if (!tooFar.ok) {
+            assert.equal(tooFar.code, 'not_found');
+            assert.equal(tooFar.message, 'Version not found');
         }
     });
 
-    it('returns invalid_input for a malformed version (API-002: no parseInt leaks)', async () => {
+    it('rejects malformed versions with no parseInt leak (API-002, ARCH-001 codes)', async () => {
         const storage = new MemoryStorage();
         const project = await storage.insertProject('test');
         const seed = await seedContext(storage, project!.id, { messages: [{ text: 'm' }] });
 
-        // 'abc' used to resolve via NaN-handling; malformed selectors must be
-        // rejected (400), never silently resolved to a real version.
-        for (const bad of ['abc', '1abc', '1.9', ' 1 ']) {
+        // Non-integer NUMBERS are unambiguously malformed → invalid_input (400).
+        for (const bad of [1.9, NaN, Infinity, '']) {
             const result = await createContext(storage, project!.id, { from: seed.rootId, version: bad });
             assert.equal(result.ok, false, `should reject ${JSON.stringify(bad)}`);
             if (!result.ok) assert.equal(result.code, 'invalid_input');
+        }
+
+        // Non-integer STRINGS are immutable version ids (ARCH-001): unknown id →
+        // not_found (404), never a silently-resolved index.
+        for (const unknown of ['abc', '1abc', '1.9', ' 1 ', 'ctx_doesnotexist']) {
+            const result = await createContext(storage, project!.id, { from: seed.rootId, version: unknown });
+            assert.equal(result.ok, false, `should reject ${JSON.stringify(unknown)}`);
+            if (!result.ok) assert.equal(result.code, 'not_found');
         }
     });
 

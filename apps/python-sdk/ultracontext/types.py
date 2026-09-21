@@ -1,6 +1,12 @@
 """UltraContext type definitions."""
 
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict, Union
+
+# A version address (ARCH-001): an immutable version id (``ctx_...``, the form
+# to prefer) or a positional index (a deprecated alias, kept so existing code
+# keeps working). Negative indexes count back from the head, so ``-1`` is the
+# latest version.
+VersionSelector = Union[int, str]
 
 
 class Context(TypedDict):
@@ -22,13 +28,48 @@ class Message(TypedDict, total=False):
 
 
 class Version(TypedDict, total=False):
-    """Version history entry."""
+    """Version history entry.
+
+    Address a version by ``id`` (ARCH-001): it is the version head's public id,
+    it never moves and is never reused, so a stored reference keeps meaning the
+    same thing as the chain grows. ``version`` is the deprecated positional
+    alias -- recomputed at read time, so it shifts as versions are added.
+    """
 
     version: int
+    id: str
     created_at: str
     operation: str
     affected: Optional[List[str]]
     metadata: Optional[Dict[str, Any]]
+
+
+class BranchRef(TypedDict):
+    """A named branch (ARCH-001): a stable name pinned to an immutable version id.
+
+    ``version`` is the pinned version's positional index at read time, and -1
+    when the pinned head is no longer part of the chain (its version node was
+    deleted) -- the name and ``version_id`` survive that, the index cannot.
+    """
+
+    name: str
+    version_id: str
+    version: int
+    created_at: str
+    updated_at: str
+
+
+class BranchListResponse(TypedDict):
+    """Response from branches()."""
+
+    branches: List[BranchRef]
+
+
+class DeleteBranchResponse(TypedDict):
+    """Response from delete_branch() -- the pointer was removed, never the data."""
+
+    deleted: bool
+    name: str
 
 
 class CreateContextResponse(TypedDict):

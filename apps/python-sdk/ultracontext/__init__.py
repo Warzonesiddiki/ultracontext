@@ -4,8 +4,11 @@ from .client import AsyncUltraContext, UltraContext
 from .exceptions import UltraContextError, UltraContextHttpError
 from .types import (
     AppendResponse,
+    BranchListResponse,
+    BranchRef,
     Context,
     CreateContextResponse,
+    DeleteBranchResponse,
     DeleteManyResponse,
     DeleteManyResult,
     DeleteResponse,
@@ -15,9 +18,12 @@ from .types import (
     PermanentDeleteResponse,
     UpdateResponse,
     Version,
+    VersionSelector,
 )
 
-__version__ = "1.1.0"
+# Kept in lockstep with pyproject.toml (they had drifted: 1.1.0 here vs 1.3.0
+# there). ARCH-001 adds named branches + immutable version ids → minor bump.
+__version__ = "1.4.0"
 __all__ = [
     # clients
     "UltraContext",
@@ -29,6 +35,10 @@ __all__ = [
     "Context",
     "Message",
     "Version",
+    "VersionSelector",
+    "BranchRef",
+    "BranchListResponse",
+    "DeleteBranchResponse",
     "CreateContextResponse",
     "ListContextsResponse",
     "GetContextResponse",

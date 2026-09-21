@@ -1,9 +1,20 @@
 import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-orm';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextRefRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { alias } from 'drizzle-orm/pg-core';
 
-import { nodes, api_keys, projects, type ApiDb } from './db';
+// The columns a branch ref exposes — `id` is a surrogate and never leaves here.
+const CONTEXT_REF_COLUMNS = {
+    project_id: context_refs.project_id,
+    context_id: context_refs.context_id,
+    name: context_refs.name,
+    head_id: context_refs.head_id,
+    created_at: context_refs.created_at,
+    updated_at: context_refs.updated_at,
+};
+
+import { nodes, api_keys, projects, context_refs, type ApiDb } from './db';
+import { pickNodeColumns } from './columns';
 
 // =============================================================================
 // DRIZZLE ADAPTER — wraps existing Drizzle/PostgreSQL queries
@@ -14,16 +25,18 @@ export class DrizzleAdapter implements StorageAdapter {
 
     // -- nodes: queries -------------------------------------------------------
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id })
+            .select(pickNodeColumns(nodes, columns))
             .from(nodes)
-            .where(eq(nodes.context_id, contextId));
+            .where(eq(nodes.context_id, contextId)) as Promise<Partial<NodeRow>[]>;
     }
 
     async findContextBranches(contextId: string) {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at })
+            // ordinal rides along so findHead can break timestamp ties by real
+            // write order (ARCH-002)
+            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at, ordinal: nodes.ordinal })
             .from(nodes)
             .where(and(eq(nodes.context_id, contextId), eq(nodes.type, 'context')));
     }
@@ -272,6 +285,53 @@ export class DrizzleAdapter implements StorageAdapter {
 
     async deleteApiKey(id: number): Promise<boolean> {
         const rows = await this.db.delete(api_keys).where(eq(api_keys.id, id)).returning({ id: api_keys.id });
+        return rows.length > 0;
+    }
+
+    // -- named branches (ARCH-001) ---------------------------------------------
+
+    async findContextRefs(projectId: number, contextId: string): Promise<ContextRefRow[]> {
+        const rows = await this.db
+            .select(CONTEXT_REF_COLUMNS)
+            .from(context_refs)
+            .where(and(eq(context_refs.project_id, projectId), eq(context_refs.context_id, contextId)))
+            .orderBy(asc(context_refs.name));
+        return rows as ContextRefRow[];
+    }
+
+    async upsertContextRef(values: {
+        project_id: number;
+        context_id: string;
+        name: string;
+        head_id: string;
+    }): Promise<ContextRefRow> {
+        const now = new Date().toISOString();
+        const rows = await this.db
+            .insert(context_refs)
+            .values({ ...values, created_at: now, updated_at: now })
+            // git `branch -f`: re-pinning an existing name must NOT reset its
+            // birthday — the conflict path sets only the pointer + updated_at.
+            .onConflictDoUpdate({
+                target: [context_refs.project_id, context_refs.context_id, context_refs.name],
+                set: { head_id: values.head_id, updated_at: now },
+            })
+            .returning(CONTEXT_REF_COLUMNS);
+        return rows[0] as ContextRefRow;
+    }
+
+    // Deletes the pointer only — version data lives in `nodes` and is never
+    // touched here. RETURNING gives an honest boolean in one statement.
+    async deleteContextRef(projectId: number, contextId: string, name: string): Promise<boolean> {
+        const rows = await this.db
+            .delete(context_refs)
+            .where(
+                and(
+                    eq(context_refs.project_id, projectId),
+                    eq(context_refs.context_id, contextId),
+                    eq(context_refs.name, name),
+                ),
+            )
+            .returning({ name: context_refs.name });
         return rows.length > 0;
     }
 

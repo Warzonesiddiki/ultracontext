@@ -49,17 +49,35 @@ export function retryAfterMs(header: string | null | undefined): number | undefi
     return undefined;
 }
 
+/**
+ * One entry of a context's version history.
+ *
+ * Address a version by `id` (ARCH-001): it is the version head's public id, it
+ * never moves and is never reused, so a stored reference keeps meaning the same
+ * thing as the chain grows. `version` is the deprecated positional alias — it is
+ * recomputed at read time and shifts when versions are added or removed.
+ */
 export type Version = {
     version: number;
+    /** Immutable version id (ctx_…) — pass it back as `version` to re-read this exact state. */
+    id: string;
     created_at: string;
     operation: 'create' | 'append' | 'update' | 'delete';
     affected: string[] | null;
     metadata?: Record<string, unknown>;
 };
 
+/**
+ * A version selector: an immutable version id (`ctx_…`, preferred) or a
+ * positional index (deprecated alias). Negative indexes count back from the
+ * head, so `-1` is the latest version.
+ */
+export type VersionSelector = number | string;
+
 export type CreateContextInput = {
     from?: string;
-    version?: number;
+    /** Which source version to fork: an immutable id, or a positional index (deprecated). */
+    version?: VersionSelector;
     at?: number;
     before?: string;
     metadata?: Record<string, unknown>;
@@ -80,7 +98,8 @@ export type AppendResponse<T = unknown> = {
 };
 
 export type GetContextInput = {
-    version?: number;
+    /** Which version to read: an immutable id, or a positional index (deprecated). */
+    version?: VersionSelector;
     at?: number;
     before?: string;
     history?: boolean;
@@ -237,6 +256,40 @@ export type DeleteManyResult = {
 export type DeleteManyResponse = {
     results: DeleteManyResult[];
     deleted_count: number;
+};
+
+// -- named branches (ARCH-001) -------------------------------------------------
+
+/**
+ * A named branch: a stable handle pinned to an immutable version id.
+ *
+ * `version` is the pinned version's positional index at read time and is `-1`
+ * when the pinned head is no longer part of the chain (its version node was
+ * deleted) — the name and `version_id` survive that, the index cannot.
+ */
+export type BranchRef = {
+    name: string;
+    version_id: string;
+    version: number;
+    created_at: string;
+    updated_at: string;
+};
+
+export type BranchListResponse = {
+    branches: BranchRef[];
+};
+
+export type SetBranchInput = {
+    /** Branch name: starts alphanumeric, then [A-Za-z0-9._-], no '..', no trailing
+     *  '.' or '-', at most 64 characters. */
+    name: string;
+    /** Version to pin — an immutable id or a positional index. Omit for the current head. */
+    version?: VersionSelector;
+};
+
+export type DeleteBranchResponse = {
+    deleted: boolean;
+    name: string;
 };
 
 export class UltraContextHttpError extends Error {
@@ -396,6 +449,44 @@ export class UltraContext {
 
         const query = params.toString();
         return this.request<ActivityStats>(`/contexts/stats${query ? `?${query}` : ''}`, { method: 'GET', signal: options?.signal });
+    }
+
+    // -- named branches (ARCH-001) ---------------------------------------------
+
+    /**
+     * List the named branches on a context (name-ascending). Branches are
+     * opt-in, so a context with none returns `{ branches: [] }`.
+     */
+    async branches(contextId: string, options?: SignalOptions): Promise<BranchListResponse> {
+        return this.request<BranchListResponse>(`/contexts/${encodeURIComponent(contextId)}/branches`, {
+            method: 'GET',
+            signal: options?.signal,
+        });
+    }
+
+    /**
+     * Create a branch, or move an existing one — git `branch -f` semantics.
+     * PUT is idempotent, so the SDK's retry layer can safely re-send it after a
+     * transient failure. Re-pinning preserves `created_at` and bumps `updated_at`.
+     */
+    async setBranch(contextId: string, input: SetBranchInput, options?: SignalOptions): Promise<BranchRef> {
+        return this.request<BranchRef>(`/contexts/${encodeURIComponent(contextId)}/branches`, {
+            method: 'PUT',
+            body: input,
+            signal: options?.signal,
+        });
+    }
+
+    /**
+     * Remove a branch name. Deletes the POINTER only — the version it pointed at
+     * stays readable by its id, because unpinning a name must never destroy
+     * history.
+     */
+    async deleteBranch(contextId: string, name: string, options?: SignalOptions): Promise<DeleteBranchResponse> {
+        return this.request<DeleteBranchResponse>(
+            `/contexts/${encodeURIComponent(contextId)}/branches/${encodeURIComponent(name)}`,
+            { method: 'DELETE', signal: options?.signal },
+        );
     }
 
     async deleteMany(ids: string[], options?: SignalOptions): Promise<DeleteManyResponse> {

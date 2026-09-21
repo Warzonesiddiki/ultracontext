@@ -1,8 +1,9 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextRefRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { aggregateActivity } from '@ultracontext/core';
 import type { ActivityAggregateInput } from '@ultracontext/core';
+import { nodeColumnsSelectList } from './columns';
 
 // =============================================================================
 // SUPABASE ADAPTER — same interface via Supabase REST client
@@ -17,19 +18,23 @@ export class SupabaseAdapter implements StorageAdapter {
 
     // -- nodes: queries -------------------------------------------------------
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
         const { data, error } = await this.client
             .from('nodes')
-            .select('public_id, prev_id')
+            .select(nodeColumnsSelectList(columns))
             .eq('context_id', contextId);
         if (error) throw error;
-        return data ?? [];
+        // PostgREST's types degrade to GenericStringError for a select list it
+        // cannot see statically; the projection is built from NodeRow keys only.
+        return (data ?? []) as unknown as Partial<NodeRow>[];
     }
 
     async findContextBranches(contextId: string) {
         const { data, error } = await this.client
             .from('nodes')
-            .select('public_id, prev_id, created_at')
+            // ordinal rides along so findHead can break timestamp ties by real
+            // write order (ARCH-002)
+            .select('public_id, prev_id, created_at, ordinal')
             .eq('context_id', contextId)
             .eq('type', 'context');
         if (error) throw error;
@@ -340,6 +345,92 @@ export class SupabaseAdapter implements StorageAdapter {
         const existing = await this.findApiKey(id);
         if (!existing) return false;
         const { error } = await this.client.from('api_keys').delete().eq('id', id);
+        if (error) throw error;
+        return true;
+    }
+
+    // -- named branches (ARCH-001) ---------------------------------------------
+
+    /** Branch-ref columns — `id` is a surrogate and never leaves the adapter. */
+    private static readonly CONTEXT_REF_COLUMNS =
+        'project_id, context_id, name, head_id, created_at, updated_at';
+
+    // PostgREST has no upsert-that-preserves-a-column: `resolution=merge-
+    // duplicates` rewrites every column in the payload, which would reset
+    // created_at on a move. So: read, then update or insert. Two round-trips on
+    // a rare admin path, in exchange for correct `branch -f` semantics. A
+    // concurrent create loses on the UNIQUE index and surfaces as an error,
+    // which is the same trade this adapter already documents for transactions.
+    async findContextRefs(projectId: number, contextId: string): Promise<ContextRefRow[]> {
+        const { data, error } = await this.client
+            .from('context_refs')
+            .select(SupabaseAdapter.CONTEXT_REF_COLUMNS)
+            .eq('project_id', projectId)
+            .eq('context_id', contextId)
+            .order('name');
+        if (error) throw error;
+        return (data ?? []) as ContextRefRow[];
+    }
+
+    async upsertContextRef(values: {
+        project_id: number;
+        context_id: string;
+        name: string;
+        head_id: string;
+    }): Promise<ContextRefRow> {
+        const now = new Date().toISOString();
+        const { data: existing, error: findError } = await this.client
+            .from('context_refs')
+            .select(SupabaseAdapter.CONTEXT_REF_COLUMNS)
+            .eq('project_id', values.project_id)
+            .eq('context_id', values.context_id)
+            .eq('name', values.name)
+            .limit(1)
+            .maybeSingle();
+        if (findError) throw findError;
+
+        if (existing) {
+            const { data, error } = await this.client
+                .from('context_refs')
+                .update({ head_id: values.head_id, updated_at: now })
+                .eq('project_id', values.project_id)
+                .eq('context_id', values.context_id)
+                .eq('name', values.name)
+                .select(SupabaseAdapter.CONTEXT_REF_COLUMNS)
+                .single();
+            if (error) throw error;
+            return data as ContextRefRow;
+        }
+
+        const { data, error } = await this.client
+            .from('context_refs')
+            .insert({ ...values, created_at: now, updated_at: now })
+            .select(SupabaseAdapter.CONTEXT_REF_COLUMNS)
+            .single();
+        if (error) throw error;
+        return data as ContextRefRow;
+    }
+
+    async deleteContextRef(projectId: number, contextId: string, name: string): Promise<boolean> {
+        // same existence-first pattern as deleteApiKey: PostgREST cannot report
+        // "no rows deleted" without a representation round-trip
+        const { data: existing, error: findError } = await this.client
+            .from('context_refs')
+            .select('name')
+            .eq('project_id', projectId)
+            .eq('context_id', contextId)
+            .eq('name', name)
+            .limit(1)
+            .maybeSingle();
+        if (findError) throw findError;
+        if (!existing) return false;
+
+        const { error } = await this.client
+            .from('context_refs')
+            .delete()
+            .eq('project_id', projectId)
+            .eq('context_id', contextId)
+            .eq('name', name);
         if (error) throw error;
         return true;
     }

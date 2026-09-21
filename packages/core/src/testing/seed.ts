@@ -20,7 +20,9 @@ export type SeedContextResult = {
 // -- fixture factory ----------------------------------------------------------
 // Mirrors what the createContext capability produces: a root context node, an
 // initial head node (metadata { operation: 'create' }), and message nodes
-// linked under the head by prev_id. Lets op tests skip sibling-op dependencies.
+// linked under the head by prev_id — each with the ordinal the real op writes
+// (ARCH-002), so a fixture and a created context are indistinguishable to the
+// ordering code. Lets op tests skip sibling-op dependencies.
 
 export async function seedContext(
     storage: StorageAdapter,
@@ -47,6 +49,8 @@ export async function seedContext(
         type: 'context',
         context_id: rootId,
         prev_id: null,
+        // first head of a new root: its partition is empty, so it starts at 0
+        ordinal: 0,
         content: {},
         metadata: { operation: 'create' },
     });

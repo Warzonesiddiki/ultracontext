@@ -11,6 +11,7 @@ export type {
     ApiKeyRow,
     ApiKeyPublic,
     ProjectRow,
+    ContextRefRow,
     ContextFilters,
     SearchFilters,
     SearchHit,
@@ -28,13 +29,22 @@ export type { MessageView } from './message-view';
 
 export {
     orderNodes,
+    compareByOrdinalThenTime,
     buildNodeInsertRecords,
     findTail,
     findHead,
+    nextOrdinal,
     getOrderedNodes,
     getVersions,
 } from './context-chain';
-export type { NodeInsertInput, VersionInfo } from './context-chain';
+export type { NodeInsertInput, VersionInfo, OrderableNode, OrderNodesMeta } from './context-chain';
+
+// -- chain health (ARCH-002) --------------------------------------------------
+// The prev_id chain is the authoritative message order; when a walk of it comes
+// up short, ordering falls back and THIS fires. In-process counters + a
+// subscribe hook — no telemetry, no network, nothing leaves the machine.
+export { recordChainFallback, onChainFallback, chainHealth, resetChainHealth } from './chain-health';
+export type { ChainFallbackEvent, ChainHealthKind, ChainHealthListener, ChainHealthSnapshot } from './chain-health';
 
 // -- capability ops -----------------------------------------------------------
 
@@ -60,8 +70,20 @@ export { DEFAULT_ACTIVITY_DAYS, MAX_ACTIVITY_BUCKETS } from './ops/analytics';
 export { createContext } from './ops/create-context';
 export type { CreateContextInput } from './ops/create-context';
 
-export { getContext } from './ops/get-context';
-export type { GetContextOptions } from './ops/get-context';
+export { getContext, resolveVersionSelection, classifyVersionSelection } from './ops/get-context';
+export type { GetContextOptions, ResolvedVersion, VersionSelection } from './ops/get-context';
+
+// -- named branches (ARCH-001): stable names over immutable version ids --------
+
+export {
+    listBranches,
+    createBranch,
+    deleteBranch,
+    isValidBranchName,
+    MAX_BRANCH_NAME_LEN,
+    BRANCH_NAME_ERROR,
+} from './ops/branches';
+export type { BranchRef, SetBranchInput } from './ops/branches';
 
 export { appendMessages } from './ops/append-messages';
 

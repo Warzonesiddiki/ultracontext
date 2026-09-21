@@ -85,7 +85,9 @@ All responses return JSON with a consistent structure:
 }
 ```
 
-Each message includes an `index` field (0-based position in context). Add `?history=true` to include version history. See [View Context History](/guides/view-context-history) for details.
+Each message includes an `index` field (0-based position in context). Add `?history=true` to include version history: every entry carries an immutable `id` alongside its deprecated positional `version`.
+
+Any endpoint that takes a version — `?version=` on `GET /contexts/{id}`, or `version` when forking — accepts either that immutable id (`ctx_…`, preferred) or a positional index (deprecated alias; negative counts back from the head, so `-1` is the latest). An id that is not in the chain is a `404`. Named branches (`/contexts/{id}/branches`) pin a readable name to an id. See [View Context History](/guides/view-context-history) for details.
 
 ## Error Handling
 

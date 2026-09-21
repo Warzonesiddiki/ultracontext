@@ -15,6 +15,13 @@ export type NodeRow = {
     parent_id: string | null;
     prev_id: string | null;
     context_id: string | null;
+    /**
+     * Persisted position within this node's `context_id` partition (ARCH-002),
+     * written in the same insert that writes `prev_id` so the two can never
+     * disagree. Null on rows written before migration 0004 — ordering treats a
+     * missing ordinal as "sorts last" rather than guessing.
+     */
+    ordinal: number | null;
 };
 
 export type NodeInsertRow = {
@@ -26,6 +33,12 @@ export type NodeInsertRow = {
     context_id?: string | null;
     parent_id?: string | null;
     prev_id?: string | null;
+    /**
+     * Position in the `context_id` partition. Core write paths always set it
+     * (see buildNodeInsertRecords / nextOrdinal); adapters persist whatever
+     * they are given and leave it null when omitted.
+     */
+    ordinal?: number | null;
     /**
      * ISO 8601 timestamp to store verbatim. Omit for "now".
      * Used by import/restore so a restored context keeps its original
@@ -53,6 +66,26 @@ export type ApiKeyPublic = {
 
 export type ProjectRow = {
     id: number;
+};
+
+// -- Named branches (ARCH-001) ------------------------------------------------
+//
+// A context_ref pins a human-chosen name to an immutable version head id.
+// Unlike a positional version index — which silently changes meaning as new
+// versions are appended — head_id never moves, so a saved reference keeps
+// pointing at the same state forever.
+//
+// head_id deliberately has NO foreign key: the version node it points at can
+// be removed later (permanent delete of a context, message pruning), and an
+// orphaned branch name is tolerable — readers report version -1 for it rather
+// than failing the write that created the name.
+export type ContextRefRow = {
+    project_id: number;
+    context_id: string;
+    name: string;
+    head_id: string;
+    created_at: string;
+    updated_at: string;
 };
 
 // -- Metadata filters for listing contexts ------------------------------------
@@ -127,7 +160,7 @@ export type ActivityRow = {
 export interface StorageAdapter {
     // nodes — queries
     findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]>;
-    findContextBranches(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'prev_id' | 'created_at'>[]>;
+    findContextBranches(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'prev_id' | 'created_at' | 'ordinal'>[]>;
     findVersions(contextId: string): Promise<Pick<NodeRow, 'public_id' | 'created_at' | 'metadata'>[]>;
     findNonContextNodes(contextId: string): Promise<NodeRow[]>;
     /**
@@ -170,6 +203,19 @@ export interface StorageAdapter {
     // Adapters aggregate in the database where possible; never throws for an
     // empty project (returns []).
     projectActivity(projectId: number, query: ActivityQuery): Promise<ActivityRow[]>;
+
+    // named branches (ARCH-001) — a project-scoped name pinned to a version
+    // head. Every method here MUST be project-scoped: branch names are tenant
+    // data, and an unscoped lookup is the same cross-tenant leak as SEC-001.
+    /** All branch names on one context, in a stable (name-ascending) order. */
+    findContextRefs(projectId: number, contextId: string): Promise<ContextRefRow[]>;
+    /**
+     * Create-or-move a branch name (git `branch -f` semantics): an existing
+     * name keeps its `created_at` and bumps `updated_at`.
+     */
+    upsertContextRef(values: { project_id: number; context_id: string; name: string; head_id: string }): Promise<ContextRefRow>;
+    /** Delete a branch name. Never touches version data. False if absent. */
+    deleteContextRef(projectId: number, contextId: string, name: string): Promise<boolean>;
 
     // projects
     insertProject(name: string): Promise<ProjectRow | null>;

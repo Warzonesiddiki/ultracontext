@@ -9,7 +9,20 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import pty from "node-pty";
+// node-pty is a NATIVE module. Where it cannot be built — no C toolchain, no
+// route to the nodejs.org headers, no prebuild for this platform — a static
+// import throws at load time and takes the whole file down with it, which reads
+// as a product regression when it is purely an environment property. Load it
+// defensively and skip the suite with the reason instead; the tests still run in
+// full wherever the binding is available (CI on ubuntu-latest, a normal dev
+// machine), so nothing is silently dropped from coverage there.
+let pty = null;
+let ptyUnavailable = null;
+try {
+  pty = (await import("node-pty")).default;
+} catch (error) {
+  ptyUnavailable = `node-pty could not be loaded (${String(error.message).split("\n")[0]})`;
+}
 
 // ── keystroke sequences the wizard expects ───────────────────────
 
@@ -119,7 +132,7 @@ function chars(str) { return [...str]; }
 
 // ── tests ────────────────────────────────────────────────────────
 
-describe("onboarding wizard e2e (real CLI, real pty)", () => {
+describe("onboarding wizard e2e (real CLI, real pty)", { skip: ptyUnavailable || false }, () => {
   it("self-host + all defaults writes full-capture config", async () => {
     const w = spawnWizard();
 

@@ -102,24 +102,41 @@ describe('API-002: strict version / at selectors', () => {
         assert.equal((await req(`/contexts/${ctxId}?at=99`)).status, 404);
     });
 
-    it('malformed selectors are 400, not silently resolved', async () => {
+    it('malformed `at` selectors are 400, not silently resolved', async () => {
         const { req, ctxId } = await setupTestApp();
-        // before the fix these all resolved: parseInt("1abc")===1,
-        // parseInt("1.9")===1, parseInt(" 1 ")===1
-        assert.equal((await req(`/contexts/${ctxId}?version=1abc`)).status, 400);
-        assert.equal((await req(`/contexts/${ctxId}?version=1.9`)).status, 400);
-        assert.equal((await req(`/contexts/${ctxId}?version=%201%20`)).status, 400);
+        // before API-002 these all resolved: parseInt("1abc")===1,
+        // parseInt("1.9")===1, parseInt(" 1 ")===1. `at` is a message index with
+        // no id form, so it stays strict-integer (ARCH-001 changed `version` only).
         assert.equal((await req(`/contexts/${ctxId}?at=1abc`)).status, 400);
         assert.equal((await req(`/contexts/${ctxId}?at=1.9`)).status, 400);
+        assert.equal((await req(`/contexts/${ctxId}?at=%201%20`)).status, 400);
         assert.equal((await req(`/contexts/${ctxId}?at=-1`)).status, 400);
     });
 
-    it('malformed fork selectors on POST /contexts are 400', async () => {
+    it('non-integer `version` selectors are 404 ids, never a silent index (ARCH-001)', async () => {
+        const { req, ctxId } = await setupTestApp();
+        // `version` now addresses an immutable id as well as a positional index,
+        // and a query string cannot tell the two apart. So the parseInt leaks
+        // API-002 closed stay closed — '1abc' never becomes index 1 — but the
+        // verdict moves from 400 (malformed) to 404 (no such version), because
+        // 'ctx_typo' and '1abc' are the same thing to the server: an id that is
+        // not in this chain.
+        assert.equal((await req(`/contexts/${ctxId}?version=1abc`)).status, 404);
+        assert.equal((await req(`/contexts/${ctxId}?version=1.9`)).status, 404);
+        assert.equal((await req(`/contexts/${ctxId}?version=%201%20`)).status, 404);
+        assert.equal((await req(`/contexts/${ctxId}?version=ctx_doesnotexist`)).status, 404);
+        // the empty value is still rejected at the gateway, before core
+        assert.equal((await req(`/contexts/${ctxId}?version=`)).status, 400);
+    });
+
+    it('fork selectors: a bad `at` is 400, an unknown `version` id is 404', async () => {
         const { req, json, ctxId } = await setupTestApp();
         const fork = (body: Record<string, unknown>) =>
             req('/contexts', { method: 'POST', headers: json, body: JSON.stringify(body) });
-        assert.equal((await fork({ from: ctxId, version: '1abc' })).status, 400);
+        assert.equal((await fork({ from: ctxId, version: '1abc' })).status, 404);
         assert.equal((await fork({ from: ctxId, at: '1.9' })).status, 400);
+        // a fractional version in a JSON body is unambiguously malformed → 400
+        assert.equal((await fork({ from: ctxId, version: 1.5 })).status, 400);
         // sanity: a valid fork still works
         assert.equal((await fork({ from: ctxId, version: 1 })).status, 201);
     });

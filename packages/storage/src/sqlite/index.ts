@@ -2,9 +2,10 @@ import { and, asc, desc, eq, gt, inArray, isNull, lt, ne, sql } from 'drizzle-or
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
 import { createClient } from '@libsql/client';
 
-import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
+import type { StorageAdapter, NodeRow, NodeInsertRow, ApiKeyRow, ApiKeyPublic, ProjectRow, ContextRefRow, ContextFilters, SearchFilters, SearchHit, TransactionOptions, ActivityQuery, ActivityRow } from '@ultracontext/core';
 import { searchableText } from '@ultracontext/core';
-import { schema, nodes, api_keys, projects } from './schema';
+import { schema, nodes, api_keys, projects, context_refs } from './schema';
+import { pickNodeColumns } from '../columns';
 import { migrateSqlite } from '../migrations/sqlite';
 
 // =============================================================================
@@ -12,6 +13,16 @@ import { migrateSqlite } from '../migrations/sqlite';
 // =============================================================================
 
 type SqliteDb = LibSQLDatabase<typeof schema>;
+
+// The columns a branch ref exposes — `id` is a surrogate and never leaves here.
+const CONTEXT_REF_COLUMNS = {
+    project_id: context_refs.project_id,
+    context_id: context_refs.context_id,
+    name: context_refs.name,
+    head_id: context_refs.head_id,
+    created_at: context_refs.created_at,
+    updated_at: context_refs.updated_at,
+};
 
 function parseJson<T>(value: unknown, fallback: T): T {
     if (typeof value !== 'string') return (value as T) ?? fallback;
@@ -97,16 +108,18 @@ export class SqliteAdapter implements StorageAdapter {
 
     // -- nodes: queries -------------------------------------------------------
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id })
+            .select(pickNodeColumns(nodes, columns))
             .from(nodes)
-            .where(eq(nodes.context_id, contextId));
+            .where(eq(nodes.context_id, contextId)) as Promise<Partial<NodeRow>[]>;
     }
 
     async findContextBranches(contextId: string) {
         return this.db
-            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at })
+            // ordinal rides along so findHead can break timestamp ties by real
+            // write order (ARCH-002)
+            .select({ public_id: nodes.public_id, prev_id: nodes.prev_id, created_at: nodes.created_at, ordinal: nodes.ordinal })
             .from(nodes)
             .where(and(eq(nodes.context_id, contextId), eq(nodes.type, 'context')));
     }
@@ -363,6 +376,65 @@ export class SqliteAdapter implements StorageAdapter {
     async deleteApiKey(id: number): Promise<boolean> {
         const rows = await this.db.delete(api_keys).where(eq(api_keys.id, id)).returning({ id: api_keys.id });
         return rows.length > 0;
+    }
+
+    // -- named branches (ARCH-001) ---------------------------------------------
+
+    async findContextRefs(projectId: number, contextId: string): Promise<ContextRefRow[]> {
+        const rows = await this.db
+            .select(CONTEXT_REF_COLUMNS)
+            .from(context_refs)
+            .where(and(eq(context_refs.project_id, projectId), eq(context_refs.context_id, contextId)))
+            .orderBy(asc(context_refs.name));
+        return rows as ContextRefRow[];
+    }
+
+    async upsertContextRef(values: {
+        project_id: number;
+        context_id: string;
+        name: string;
+        head_id: string;
+    }): Promise<ContextRefRow> {
+        const now = new Date().toISOString();
+        const rows = await this.db
+            .insert(context_refs)
+            .values({ ...values, created_at: now, updated_at: now })
+            // git `branch -f`: keep created_at, move the pointer, bump updated_at
+            .onConflictDoUpdate({
+                target: [context_refs.project_id, context_refs.context_id, context_refs.name],
+                set: { head_id: values.head_id, updated_at: now },
+            })
+            .returning(CONTEXT_REF_COLUMNS);
+        return rows[0] as ContextRefRow;
+    }
+
+    async deleteContextRef(projectId: number, contextId: string, name: string): Promise<boolean> {
+        // libsql's delete result carries no `.changes`, so existence is checked
+        // first — the caller turns `false` into a 404, so guessing is not an
+        // option. Two cheap statements on an admin-rare path.
+        const existing = await this.db
+            .select({ name: context_refs.name })
+            .from(context_refs)
+            .where(
+                and(
+                    eq(context_refs.project_id, projectId),
+                    eq(context_refs.context_id, contextId),
+                    eq(context_refs.name, name),
+                ),
+            )
+            .limit(1);
+        if (existing.length === 0) return false;
+
+        await this.db
+            .delete(context_refs)
+            .where(
+                and(
+                    eq(context_refs.project_id, projectId),
+                    eq(context_refs.context_id, contextId),
+                    eq(context_refs.name, name),
+                ),
+            );
+        return true;
     }
 
     // -- projects -------------------------------------------------------------

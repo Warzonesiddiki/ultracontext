@@ -46,7 +46,10 @@ Create a copy of an existing context:
 // basic fork — full copy
 const fork = await uc.create({ from: 'ctx_abc123' });
 
-// by version — exact state after update/delete
+// by version id — immutable address (preferred)
+const fork = await uc.create({ from: 'ctx_abc123', version: 'ctx_4b7e0d' });
+
+// by version number — deprecated positional alias (-1 = latest)
 const fork = await uc.create({ from: 'ctx_abc123', version: 1 });
 
 // by timestamp — state at that moment
@@ -68,7 +71,10 @@ const fork = await uc.create({
 # basic fork — full copy
 fork = uc.create(from_="ctx_abc123")
 
-# by version — exact state after update/delete
+# by version id — immutable address (preferred)
+fork = uc.create(from_="ctx_abc123", version="ctx_4b7e0d")
+
+# by version number — deprecated positional alias (-1 = latest)
 fork = uc.create(from_="ctx_abc123", version=1)
 
 # by timestamp — state at that moment
@@ -92,6 +98,7 @@ fork = uc.create(
 <Info>
 `create()` without `from` creates a new empty context.
 The `version`, `before`, and `at` params require `from`.
+`version` takes an immutable version id (`ctx_…`) or a positional index; prefer the id, because indexes shift as the chain grows.
 </Info>
 
 ### By Version

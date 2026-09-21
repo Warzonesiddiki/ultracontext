@@ -5,6 +5,7 @@ import type {
     ApiKeyRow,
     ApiKeyPublic,
     ProjectRow,
+    ContextRefRow,
     ContextFilters,
     SearchFilters,
     SearchHit,
@@ -20,6 +21,8 @@ type StoredNode = NodeRow;
 
 export class MemoryStorage implements StorageAdapter {
     private nodes: StoredNode[] = [];
+    // named branches (ARCH-001): name → pinned version head id
+    private refs: ContextRefRow[] = [];
     private keys: Array<{
         id: number;
         project_id: number;
@@ -32,16 +35,20 @@ export class MemoryStorage implements StorageAdapter {
     private projectSeq = 0;
     private nodeSeq = 0;
 
-    async findNodesByContextId(contextId: string): Promise<Partial<NodeRow>[]> {
+    async findNodesByContextId(contextId: string, columns?: (keyof NodeRow)[]): Promise<Partial<NodeRow>[]> {
+        // honour the projection exactly like the SQL adapters do: the default
+        // stays the two columns the chain walk needs, and a caller asking for
+        // `ordinal` (nextOrdinal, ARCH-002) gets it rather than undefined.
+        const wanted = columns?.length ? columns : (['public_id', 'prev_id'] as (keyof NodeRow)[]);
         return this.nodes
             .filter((n) => n.context_id === contextId)
-            .map((n) => ({ public_id: n.public_id, prev_id: n.prev_id }));
+            .map((n) => Object.fromEntries(wanted.map((column) => [column, n[column]])) as Partial<NodeRow>);
     }
 
     async findContextBranches(contextId: string) {
         return this.nodes
             .filter((n) => n.context_id === contextId && n.type === 'context')
-            .map((n) => ({ public_id: n.public_id, prev_id: n.prev_id, created_at: n.created_at }));
+            .map((n) => ({ public_id: n.public_id, prev_id: n.prev_id, created_at: n.created_at, ordinal: n.ordinal }));
     }
 
     async findVersions(contextId: string) {
@@ -91,6 +98,7 @@ export class MemoryStorage implements StorageAdapter {
                 parent_id: row.parent_id ?? null,
                 prev_id: row.prev_id ?? null,
                 context_id: row.context_id ?? null,
+                ordinal: row.ordinal ?? null,
             };
             this.nodes.push(node);
             results.push({
@@ -216,6 +224,49 @@ export class MemoryStorage implements StorageAdapter {
         return true;
     }
 
+    // -- named branches (ARCH-001) --------------------------------------------
+
+    async findContextRefs(projectId: number, contextId: string): Promise<ContextRefRow[]> {
+        return this.refs
+            .filter((r) => r.project_id === projectId && r.context_id === contextId)
+            // stable order: the SQL adapters ORDER BY name, so tests that assert
+            // on list order exercise the real contract
+            .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+            .map((r) => ({ ...r }));
+    }
+
+    async upsertContextRef(values: {
+        project_id: number;
+        context_id: string;
+        name: string;
+        head_id: string;
+    }): Promise<ContextRefRow> {
+        const now = new Date().toISOString();
+        const existing = this.refs.find(
+            (r) => r.project_id === values.project_id && r.context_id === values.context_id && r.name === values.name
+        );
+
+        // git `branch -f`: the pointer moves, the branch's birthday does not
+        if (existing) {
+            existing.head_id = values.head_id;
+            existing.updated_at = now;
+            return { ...existing };
+        }
+
+        const row: ContextRefRow = { ...values, created_at: now, updated_at: now };
+        this.refs.push(row);
+        return { ...row };
+    }
+
+    async deleteContextRef(projectId: number, contextId: string, name: string): Promise<boolean> {
+        const i = this.refs.findIndex(
+            (r) => r.project_id === projectId && r.context_id === contextId && r.name === name
+        );
+        if (i === -1) return false;
+        this.refs.splice(i, 1);
+        return true;
+    }
+
     async insertProject(name: string): Promise<ProjectRow | null> {
         return { id: ++this.projectSeq };
     }
@@ -242,5 +293,10 @@ export class MemoryStorage implements StorageAdapter {
 
     getNodesWithParentId(parentId: string) {
         return this.nodes.filter((n) => n.parent_id === parentId);
+    }
+
+    /** Raw stored branch rows (ARCH-001) — for tests asserting on the pin itself. */
+    getContextRefs() {
+        return this.refs.map((r) => ({ ...r }));
     }
 }

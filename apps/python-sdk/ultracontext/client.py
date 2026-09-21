@@ -13,13 +13,17 @@ import httpx
 from .exceptions import UltraContextHttpError
 from .types import (
     AppendResponse,
+    BranchListResponse,
+    BranchRef,
     CreateContextResponse,
+    DeleteBranchResponse,
     DeleteManyResponse,
     DeleteResponse,
     GetContextResponse,
     ListContextsResponse,
     PermanentDeleteResponse,
     UpdateResponse,
+    VersionSelector,
 )
 
 # -- retry policy (SDK-001) ------------------------------------------------------
@@ -241,7 +245,7 @@ class UltraContext(_BaseClient):
         self,
         *,
         from_: Optional[str] = None,
-        version: Optional[int] = None,
+        version: Optional[VersionSelector] = None,
         at: Optional[int] = None,
         before: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -251,7 +255,9 @@ class UltraContext(_BaseClient):
 
         Args:
             from_: Source context ID to fork from
-            version: Fork from specific version
+            version: Fork from a specific version -- an immutable id
+                (``ctx_...``, preferred) or a positional index (deprecated alias;
+                negative counts back from the head, -1 = latest)
             at: Fork messages 0 through this index
             before: Fork point-in-time state before timestamp
             metadata: Context metadata
@@ -278,7 +284,7 @@ class UltraContext(_BaseClient):
         self,
         context_id: str,
         *,
-        version: Optional[int] = None,
+        version: Optional[VersionSelector] = None,
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
@@ -290,7 +296,7 @@ class UltraContext(_BaseClient):
         self,
         context_id: Optional[str] = None,
         *,
-        version: Optional[int] = None,
+        version: Optional[VersionSelector] = None,
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
@@ -302,7 +308,9 @@ class UltraContext(_BaseClient):
 
         Args:
             context_id: Context ID (omit to list all)
-            version: Specific version to retrieve
+            version: Specific version to retrieve -- an immutable id
+                (``ctx_...``, preferred) or a positional index (deprecated alias;
+                negative counts back from the head, -1 = latest)
             at: Return messages 0 through this index
             before: Point-in-time state before timestamp
             history: Include version history
@@ -441,6 +449,66 @@ class UltraContext(_BaseClient):
         """
         return self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 409, 500])
 
+    # --- Named branches (ARCH-001) ---
+
+    def branches(self, context_id: str) -> BranchListResponse:
+        """
+        List the named branches on a context, name-ascending.
+
+        A branch pins a stable, human-chosen name to an immutable version id, so
+        a reference you saved keeps pointing at the same state no matter how much
+        the chain grows. Branches are opt-in: a context with none returns an
+        empty list.
+
+        Args:
+            context_id: Context ID
+        """
+        return self._request("GET", f"/contexts/{quote(context_id, safe='')}/branches")
+
+    def set_branch(
+        self,
+        context_id: str,
+        name: str,
+        *,
+        version: Optional[VersionSelector] = None,
+    ) -> BranchRef:
+        """
+        Create a branch, or move an existing one (git ``branch -f`` semantics).
+
+        PUT is idempotent, so the retry layer can safely re-send it after a
+        transient failure. Re-pinning an existing name preserves ``created_at``
+        and bumps ``updated_at``.
+
+        Args:
+            context_id: Context ID
+            name: Branch name -- starts with a letter or digit, then
+                ``[A-Za-z0-9._-]``, no ``..``, no trailing ``.`` or ``-``,
+                at most 64 characters
+            version: Version to pin -- an immutable id (``ctx_...``, preferred)
+                or a positional index (deprecated). Omit to pin the current head.
+        """
+        body: Dict[str, Any] = {"name": name}
+        if version is not None:
+            body["version"] = version
+
+        return self._request("PUT", f"/contexts/{quote(context_id, safe='')}/branches", json=body)
+
+    def delete_branch(self, context_id: str, name: str) -> DeleteBranchResponse:
+        """
+        Remove a branch name.
+
+        Deletes the POINTER only -- the version it pointed at stays readable by
+        its ``version_id``, because unpinning a name must never destroy history.
+
+        Args:
+            context_id: Context ID
+            name: Branch name
+        """
+        return self._request(
+            "DELETE",
+            f"/contexts/{quote(context_id, safe='')}/branches/{quote(name, safe='')}",
+        )
+
 
 class AsyncUltraContext(_BaseClient):
     """Async UltraContext API client."""
@@ -541,7 +609,7 @@ class AsyncUltraContext(_BaseClient):
         self,
         *,
         from_: Optional[str] = None,
-        version: Optional[int] = None,
+        version: Optional[VersionSelector] = None,
         at: Optional[int] = None,
         before: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -569,7 +637,7 @@ class AsyncUltraContext(_BaseClient):
         self,
         context_id: str,
         *,
-        version: Optional[int] = None,
+        version: Optional[VersionSelector] = None,
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
@@ -581,7 +649,7 @@ class AsyncUltraContext(_BaseClient):
         self,
         context_id: Optional[str] = None,
         *,
-        version: Optional[int] = None,
+        version: Optional[VersionSelector] = None,
         at: Optional[int] = None,
         before: Optional[str] = None,
         history: Optional[bool] = None,
@@ -685,3 +753,34 @@ class AsyncUltraContext(_BaseClient):
     async def delete_many(self, ids: List[str]) -> DeleteManyResponse:
         """Delete multiple contexts permanently (max 100). 200/207/409/500 all carry a results body."""
         return await self._request("POST", "/contexts/delete-many", json={"ids": ids}, accept_statuses=[200, 207, 409, 500])
+
+    # --- Named branches (ARCH-001) ---
+
+    async def branches(self, context_id: str) -> BranchListResponse:
+        """List the named branches on a context, name-ascending."""
+        return await self._request("GET", f"/contexts/{quote(context_id, safe='')}/branches")
+
+    async def set_branch(
+        self,
+        context_id: str,
+        name: str,
+        *,
+        version: Optional[VersionSelector] = None,
+    ) -> BranchRef:
+        """Create a branch, or move an existing one (git ``branch -f`` semantics).
+
+        Omit ``version`` to pin the current head; pass an immutable id
+        (``ctx_...``) or a positional index to pin an exact version.
+        """
+        body: Dict[str, Any] = {"name": name}
+        if version is not None:
+            body["version"] = version
+
+        return await self._request("PUT", f"/contexts/{quote(context_id, safe='')}/branches", json=body)
+
+    async def delete_branch(self, context_id: str, name: str) -> DeleteBranchResponse:
+        """Remove a branch name. Deletes the pointer only, never version data."""
+        return await self._request(
+            "DELETE",
+            f"/contexts/{quote(context_id, safe='')}/branches/{quote(name, safe='')}",
+        )

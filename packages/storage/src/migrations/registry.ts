@@ -9,12 +9,16 @@
 
 import { initMigration } from './0001_init';
 import { sqliteConstraintsMigration } from './0002_sqlite_constraints';
+import { contextRefsMigration } from './0003_context_refs';
+import { nodeOrdinalMigration } from './0004_node_ordinal';
 import type { Migration } from './types';
 
 export const migrations: Migration[] = [
     // ── append new migrations below, in version order ────────────────────
     initMigration,
     sqliteConstraintsMigration,
+    contextRefsMigration,
+    nodeOrdinalMigration,
 ];
 
 export function validateRegistry(list: Migration[]): void {

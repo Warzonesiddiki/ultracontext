@@ -192,7 +192,10 @@ const { data } = await uc.get(contextId, { at: 5 });
 // by timestamp — state at that moment. Uses ISO 8601 format
 const { data } = await uc.get(contextId, { before: '2024-01-10T10:30:00Z' });
 
-// by version — exact state after that mutation
+// by version id — immutable, the address to store (preferred)
+const { data } = await uc.get(contextId, { version: 'ctx_4b7e0d' });
+
+// by version number — deprecated positional alias (-1 = latest)
 const { data } = await uc.get(contextId, { version: 1 });
 
 // with history — see all mutations
@@ -209,7 +212,10 @@ result = uc.get(context_id, at=5)
 # by timestamp — state at that moment. Uses ISO 8601 format
 result = uc.get(context_id, before="2024-01-10T10:30:00Z")
 
-# by version — exact state after that mutation
+# by version id — immutable, the address to store (preferred)
+result = uc.get(context_id, version="ctx_4b7e0d")
+
+# by version number — deprecated positional alias (-1 = latest)
 result = uc.get(context_id, version=1)
 
 # with history — see all mutations
@@ -272,8 +278,8 @@ Use `history: true` to see what mutations happened and which versions exist:
 const { data, version, versions } = await uc.get(contextId, { history: true });
 
 // → versions: [
-//    { version: 0, operation: 'create', affected: null, created_at: '...' },
-//    { version: 1, operation: 'update', affected: ['msg_abc'], created_at: '...' },
+//    { version: 0, id: 'ctx_9f2a1c', operation: 'create', affected: null, created_at: '...' },
+//    { version: 1, id: 'ctx_4b7e0d', operation: 'update', affected: ['msg_abc'], created_at: '...' },
 // ]
 ```
 
@@ -281,22 +287,26 @@ const { data, version, versions } = await uc.get(contextId, { history: true });
 result = uc.get(context_id, history=True)
 
 # → result["versions"]: [
-#     { "version": 0, "operation": "create", "affected": None, "created_at": "..." },
-#     { "version": 1, "operation": "update", "affected": ["msg_abc"], "created_at": "..." },
+#     { "version": 0, "id": "ctx_9f2a1c", "operation": "create", "affected": None, "created_at": "..." },
+#     { "version": 1, "id": "ctx_4b7e0d", "operation": "update", "affected": ["msg_abc"], "created_at": "..." },
 #   ]
 ```
 
 </CodeGroup>
 
-Then you can retrieve the state at a specific version:
+Then you can retrieve the state at a specific version — by its immutable `id`
+(the address to store; it never changes meaning) or by its positional `version`
+number (a deprecated alias that shifts as the chain grows):
 
 <CodeGroup>
 ```typescript TypeScript
-const { data } = await uc.get(contextId, { version: 1 });
+const { data } = await uc.get(contextId, { version: 'ctx_4b7e0d' }); // by id
+const { data } = await uc.get(contextId, { version: 1 });            // by index
 ```
 
 ```python Python
-result = uc.get(context_id, version=1)
+result = uc.get(context_id, version="ctx_4b7e0d")  # by id
+result = uc.get(context_id, version=1)             # by index
 ```
 
 </CodeGroup>

@@ -110,13 +110,43 @@ create table nodes (
   created_at timestamptz not null default now(),
   parent_id text,
   prev_id text,
-  context_id text
+  context_id text,
+  -- position within the context_id partition; see "Health and chain integrity"
+  ordinal bigint
 );
+
+-- named branches: a name pinned to an immutable version head id
+create table context_refs (
+  id bigserial primary key,
+  project_id bigint not null,
+  context_id text not null,
+  name text not null,
+  head_id text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists uq_context_refs_project_context_name
+  on context_refs (project_id, context_id, name);
 
 -- GIN index for fast metadata filtering
 create index if not exists idx_nodes_metadata
   on nodes using gin (metadata);
+
+-- chain ordering: MAX(ordinal) per partition on write, ordered reads on the
+-- fallback path
+create index if not exists idx_nodes_context_ordinal
+  on nodes (context_id, ordinal);
 ```
+
+<Note>
+  This sketch is here to explain the shape of the data, not to be your install
+  script. The canonical schema is **`apps/postgres/init.sql`**, generated from
+  the migration registry in `packages/storage/src/migrations/` — run that file
+  instead of copying DDL by hand, so your database carries every column the API
+  selects (`ordinal`, `context_refs`) and stamps the migration versions it
+  contains. Direct PostgreSQL and Drizzle clients also auto-migrate on connect.
+</Note>
 
 ## Storage adapters
 
@@ -246,6 +276,46 @@ When the binding is present, key lookups are cached for 1 hour. Without it, ever
 ```bash
 cd apps/api && npx wrangler deploy
 ```
+
+## Health and chain integrity
+
+Two unauthenticated probes are served for load balancers and orchestrators,
+which cannot hold API keys:
+
+| Endpoint | Meaning |
+|---|---|
+| `GET /health` | Liveness: the process is up and serving. Also carries the chain-health counters below. |
+| `GET /health/ready` | Readiness: the storage backend answered a trivial read. 503 when it did not. |
+
+Message order inside a version is a linked list — each node points at its
+predecessor through `prev_id`. When a read cannot walk that list (a database
+damaged by an older crash, a hand edit, a partial import), ordering falls back
+to the persisted `ordinal`, then `created_at`, then the unique public id, so the
+result stays deterministic instead of depending on the order rows came back in.
+Every fallback is counted:
+
+```json
+{
+  "status": "ok",
+  "chain_health": {
+    "fallbacks": 0,
+    "nodes_lost": 0,
+    "contexts_affected": 0,
+    "last_fallback_at": null
+  }
+}
+```
+
+Alert on `chain_health.fallbacks > 0`. Note what does **not** happen:
+
+- `status` stays `"ok"`. A damaged chain is data, not a dead process — a
+  liveness probe that failed on it would restart a healthy server and fix
+  nothing.
+- Nothing is sent anywhere. The counters live in the API process, reset when it
+  restarts, and are only ever read by you. UltraContext has no telemetry.
+- The affected context id is not in the response, because this endpoint is
+  unauthenticated. It is in the server log line, prefixed
+  `[ultracontext:chain-health]`, together with the same numbers as JSON.
 
 ## MCP endpoint
 

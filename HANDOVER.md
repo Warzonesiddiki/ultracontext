@@ -174,26 +174,26 @@ before touching chain ordering, version addressing or branches.
 
 ### Next, in board order
 
-**1. ARCH-005 (L) — Split `tui.mjs` into the `ui/` tree.** The deferred
-second half of ARCH-003 (which shipped the daemon half on 2026-09-20).
-`apps/sync/src/tui.mjs` is still 1,835 lines: rendering already lives in
-`src/ui/` (30 modules behind the `ui.mjs` barrel), but the boot/cfg/state,
-status.json polling, the ~700-line resume + terminal-launch cluster, the
-context load/filter/sort/title logic, the update check and `writeConfigKey`
-do not. It also DUPLICATES code that now exists elsewhere:
-`readProcessInfo`/`isWatchCommand`/`stopWatchParentProcess` are verbatim
-copies from `daemon.mjs` (move to one shared module), and
-`normalizeApiKey`/`resolveRuntimeConfigPath`/`DEFAULT_RUNTIME_CONFIG_FILE`/
-`normalizeBootstrapModeWithPrompt`/`formatTime`/`errorDetails`/
-`runtimeLogsKeep` are re-declarations of `config.mjs`/`logger.mjs` exports.
-There is NO test coverage for any of it. NOTE the old "add every new file
-to the `node --check` list in package.json" pitfall is GONE: apps/sync's
-`check` is now `node scripts/check-syntax.mjs`, which derives its list from
-`src/` (56 modules today) — new files are covered automatically.
+**1. ARCH-005 (L) — DONE 2026-09-21.** Split `tui.mjs` into the `ui/` tree:
+1,835 → 535 lines (boot + wiring only), ten new modules under `src/ui/`
+(`status.mjs`, `update-check.mjs`, `config-file.mjs`, `config-editor.mjs`,
+`detail.mjs`, `resume/{context-helpers,terminal-launch,plans,controller}.mjs`)
+plus a shared `src/process-tree.mjs` now imported by BOTH `daemon.mjs` and the
+TUI, and the config/logger helpers imported from `config.mjs`/`logger.mjs`
+(`runtimeLogsKeep` is now an exported pure `runtimeLogsKeep(cfg)`; the TUI's
+dead `formatTime`/`OFFLINE_NOTICE` re-declarations are gone — the latter lives
+in `ui/status.mjs`). 48 new tests: sync **163 → 211** (first coverage the TUI
+has ever had). Verification: function-level diffs vs `git show
+HEAD:apps/sync/src/tui.mjs` (all bodies identical apart from the listed
+parameterisations), byte-identical non-TTY `tuiBoot()` smokes, and a pty
+render smoke (`script -qec "stty cols 140 rows 45; timeout 4 …"`) showing
+identical frame streams old vs new against the stub API. The `check` script's
+fs-derived list now covers 66 modules. Full details in the board entry.
 
 **2. PERF-001 (M) — Event-driven ingestion** in `daemon.mjs`: fs.watch /
 inotify with a polling fallback, adaptive idle backoff, mtime
-pre-filtering.
+pre-filtering. The touchpoints are `buildSources`/`listSourceFiles` (now in
+`src/sources.mjs`) and the poll loop in `daemonMain`.
 
 **3. OPS-001 (M) — Docker image for the API**: Dockerfile, build/start
 scripts, compose; document in `apps/docs/guides/self-hosting.mdx`.
@@ -216,7 +216,7 @@ Re-read each item's `d:`/`acc:` in `taskboard.html` before starting: board
 entries CAN be stale vs the tree (they were wrong for TEST-002 and
 TEST-003), so verify the code first.
 
-## 5. VERIFICATION BASELINE (all green as of 2026-09-20, post-ARCH-003)
+## 5. VERIFICATION BASELINE (all green as of 2026-09-21, post-ARCH-005)
 
 | package | command | result |
 |---|---|---|
@@ -224,7 +224,7 @@ TEST-003), so verify the code first.
 | storage | `cd packages/storage && pnpm test` | **51/51** |
 | api | `cd apps/api && node --import tsx --test src/tests/**/*.test.ts` | **198/198** |
 | parsers | `cd packages/parsers && pnpm test` | **98/98** |
-| sync | `cd apps/sync && pnpm test` | **163/163** (20 pre-existing + 143 new daemon-module tests) |
+| sync | `cd apps/sync && pnpm test` | **211/211** (20 pre-existing + 143 daemon-module tests + 48 tui-module tests) |
 | mcp-server | `cd apps/mcp-server && pnpm test` | **5/5** |
 | js-sdk | `cd apps/js-sdk && pnpm test` | **103/103** — e2e pty suite skips here |
 | python-sdk | `cd apps/python-sdk && /tmp/uc-v/bin/python -m pytest -q` | **73/73** |
@@ -515,6 +515,20 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
     columns which do not exist. It is updated as of ARCH-002 and now points
     at `apps/postgres/init.sql` as canonical — keep it that way, or delete
     the sketch when DOC-001 lands.
+25. **Do not issue several edit_file calls against the SAME file in one
+    parallel batch** — they each read the pre-batch content and last-write
+    wins, silently dropping all but one edit (each still reports success).
+    ARCH-005 lost 3 of 4 test-file edits this way and only caught it because
+    the failures refused to go away. Apply edits to one file sequentially,
+    or re-verify with grep afterwards.
+26. **Never assert a literal from mental arithmetic — run the code first.**
+    ARCH-005's new tests got 4 assertions wrong out of the gate:
+    `isWatchCommand("node --watcher x")` is TRUE (substring match),
+    `resumeFilterContexts` KEEPS contexts with empty metadata (falsy source
+    skips the filter), `resumeTargetOptionsForSource` appends the inspect
+    option only for coding sources, and the load notice lists all six source
+    counters. Execute the function, read the actual value, then write the
+    assertion.
 
 ## 9. CONVENTIONS
 
@@ -563,8 +577,8 @@ OpenAPI is generated: after touching `apps/api/src/schemas/openapi.ts`, run
 
 1. Run the §2 recovery runbook; confirm the §5 baseline is green
    (remember pitfall 17: bootstrap inside the same bash call).
-2. Work **ARCH-005** (the `tui.mjs` split — the half of ARCH-003 that was
-   deferred) → **PERF-001** → **OPS-001** → **DOC-001/002/003** →
+2. ARCH-005 (the `tui.mjs` split) shipped 2026-09-21 — see §4 item 1.
+   Next: **PERF-001** → **OPS-001** → **DOC-001/002/003** →
    **TEAM-001**, then PROM-004/006/007/008 and the P3 MISC items. Per item: re-verify the code against the board entry,
    implement, ALL suites green + tsc/mypy clean, mark the board, commit
    `<ITEM-ID>: <title>`, push to the CURRENT session's `arena/…` branch.

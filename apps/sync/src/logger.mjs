@@ -143,13 +143,17 @@ export function recentLogLabel(message) {
  * @param {object} deps.runtime  runtime handles; `stop` is used by the stdio guards
  * @param {(line: string) => void} [deps.out]  console sink (injectable for tests)
  */
+/**
+ * The ring has to hold at least a screenful even if uiRecentLimit is tiny.
+ * Shared by createLogger's ring and the TUI's log slice (ARCH-005) — the TUI
+ * previously re-declared the identical formula against its own cfg.
+ */
+export function runtimeLogsKeep(cfg) {
+  return Math.max(cfg.uiRecentLimit, 180);
+}
+
 export function createLogger({ cfg, state, runtime, out = (line) => console.log(line) } = {}) {
   let stdioErrorHandled = false;
-
-  /** The ring has to hold at least a screenful even if uiRecentLimit is tiny. */
-  function runtimeLogsKeep() {
-    return Math.max(cfg.uiRecentLimit, 180);
-  }
 
   function pushRecentLog(level, message, data) {
     let line = recentLogLabel(message);
@@ -160,7 +164,7 @@ export function createLogger({ cfg, state, runtime, out = (line) => console.log(
     if (suffix) line = `${line} ${suffix}`;
 
     state.recentLogs.push({ ts: formatTime(), level, source: logSourceFromData(data), text: line });
-    const keep = runtimeLogsKeep();
+    const keep = runtimeLogsKeep(cfg);
     while (state.recentLogs.length > keep) state.recentLogs.shift();
   }
 

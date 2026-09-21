@@ -22,10 +22,11 @@
 
 import path from "node:path";
 import process from "node:process";
-import { spawnSync } from "node:child_process";
 
 import { UltraContext } from "ultracontext";
 import { normalizeBootstrapMode } from "./protocol.mjs";
+
+import { stopWatchParentProcess } from "./process-tree.mjs";
 
 import { acquireFileLock, resolveLockPath } from "./lock.mjs";
 
@@ -188,46 +189,6 @@ export async function daemonBoot({ createStore, resolveDbPath }) {
     setBootstrapState(bootstrapStateStoreKey({ cfg, sources }), selected);
     if (selected === "last_24h") return "last_24h";
     return "all";
-  }
-
-  // ── process helpers ──
-
-  function readProcessInfo(pid) {
-    try {
-      const out = spawnSync("ps", ["-o", "ppid=,command=", "-p", String(pid)], { stdio: "pipe", encoding: "utf8" });
-      const raw = String(out.stdout ?? "").trim();
-      if (!raw) return null;
-      const match = raw.match(/^(\d+)\s+(.*)$/);
-      if (!match) return null;
-      return { ppid: Number(match[1]), command: match[2] ?? "" };
-    } catch { return null; }
-  }
-
-  function isWatchCommand(command) {
-    const raw = String(command ?? "").trim();
-    return raw.includes("node --watch") || raw.includes(" --watch ");
-  }
-
-  /**
-   * `ultracontext dev` runs the daemon under `node --watch`; stopping the daemon
-   * alone leaves the watcher to respawn it instantly, so "stop" has to reach the
-   * watching parent too. Walks up at most 10 levels and refuses to cross pid 1.
-   */
-  function stopWatchParentProcess() {
-    let pid = Number(process.ppid);
-    const seen = new Set();
-    for (let depth = 0; depth < 10; depth += 1) {
-      if (!Number.isInteger(pid) || pid <= 1) return false;
-      if (seen.has(pid)) return false;
-      seen.add(pid);
-      const info = readProcessInfo(pid);
-      if (!info) return false;
-      if (isWatchCommand(info.command)) {
-        try { process.kill(pid, "SIGTERM"); return true; } catch { return false; }
-      }
-      pid = Number(info.ppid);
-    }
-    return false;
   }
 
   // ── runtime commands ──
